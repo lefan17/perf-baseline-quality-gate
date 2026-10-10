@@ -1,0 +1,19 @@
+# 运行产物 —— 这些不是源码
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# 平台自己的结果库与生成的报告
+quality.db
+quality.db-wal
+quality.db-shm
+reports/*.md
+
+# 被测服务的开发库（压测用的库一律落在临时目录，不会出现在这里）
+sut/sut.db
+sut/sut.db-wal
+sut/sut.db-shm

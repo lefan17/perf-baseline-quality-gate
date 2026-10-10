@@ -1,0 +1,22 @@
+# 门禁规则。阈值集中在这一处 —— 改标准改这里，不改进代码。
+#
+# 每一档 severity 的取舍写在 metrics/gate.py 的模块 docstring 里。
+
+perf:
+  thresholds:
+    # 绝对阈值：兜底线，防止"基线自己已经烂了还一路绿灯"
+    error_rate_max: 0.01      # 1%
+    p95_ms_max: 300.0         # 本机环境下的绝对值；换机器要重设
+    # 样本量：低于这个数，分位数没有意义（P99 在 100 个样本里就是最大值）
+    min_total_requests: 2000
+    # 长尾比：>3 倍说明有偶发的锁等待/慢查询
+    p99_over_p95_max: 4.0
+
+probe:
+  # 性能探针：故意保留的 N+1 实现，阈值取自实测（见 docs/实测记录.md）
+  slow_report_p95_ms_max: 150.0
+  n1_over_agg_max: 10.0
+
+suite:
+  min_pass_rate: 1.0          # 功能用例必须全绿
+  max_flaky_cases: 2          # flaky 预算：超过就要处理，但不拦流水线
