@@ -1,5 +1,7 @@
 # 性能与稳定性基线平台 · 质量度量与 CI 门禁平台
 
+[![quality-gate](https://github.com/lefan17/perf-baseline-quality-gate/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/lefan17/perf-baseline-quality-gate/actions/workflows/quality-gate.yml)
+
 一个**自己压、自己判、自己拦**的性能质量平台：内置被测服务、自研压测引擎、
 结果入库、基线劣化对比、flaky 识别、门禁规则引擎、看板与 CI 集成。
 
@@ -121,6 +123,31 @@ CI 可以直接调看板的结构化判定，不用解析 stdout：
 GET /gate?run_id=perf-20261010-190550-f63da4
 → {"blocked": true, "metrics": {...}, "deltas": [...], "results": [...]}
 ```
+
+### 在 GitHub Actions 上的实测结果
+
+本仓库推上 GitHub 后 `.github/workflows/quality-gate.yml` 真的跑了，
+三个 job 全部通过（run [38055102821](https://github.com/lefan17/perf-baseline-quality-gate/actions/runs/38055102821)，
+`ubuntu-24.04` / Python 3.12）。从日志里摘的关键行：
+
+| job | 日志原文 | 结论 |
+|---|---|---|
+| 平台自身测试 | `[suite] 通过 117 / 失败 0 / 报错 0 / 跳过 0`、`[PASS] S1-pass-rate: 通过率 100.00%（阈值 100.00%，117/117）`、`[PASS] S2-flaky-budget: flaky 用例 0 条（预算 2 条）` | ✅ 放行 |
+| 性能门禁 | `10u n=2450 rps=376.10 p95=70.62ms`、`20u n=2804 rps=429.05 p95=95.29ms`；`[PASS] R1/R2/R3/R4/R5` 全过（R3 是「未设置基线，跳过劣化对比」） | ✅ 放行 |
+| N+1 缺陷探针 | `[probe] mode=agg rps=95.00 p95=46.9ms` vs `mode=n1 rps=1.32 p95=3828.6ms`；`[FAIL] P1-n1-probe: N+1 报表 P95 3828.6ms（阈值 150.0ms）`、`[WARNING] P2-n1-agg-ratio: 81.6×（阈值 10.0×）` | 探针按预期变红（`continue-on-error: true`），证明门禁真的会拦 |
+
+三点值得注意：
+
+1. **缺陷在别人的机器上依然复现，而且更严重**：本机 n1/agg 是 49.3×，
+   GitHub runner 上是 **81.6×**（P95 3828.6ms vs 本机 2985.4ms）。
+   N+1 的代价随机器而变，但"它是灾难"这个结论与机器无关。
+2. **换机器后绝对数字全线不同**：runner 上 10 并发 P95 70.62ms / RPS 376，
+   本机同配置是 79.99ms / 369.59。同量级，但不相等 ——
+   这正是 `docs/诚实边界.md` 说"绝对数字不可外推"的现场证据。
+3. **CI 里的 R3 是「未设置基线，跳过劣化对比」**，不是"比过了没劣化"。
+   runner 是干净环境，没有 `quality.db`，所以拿不到基线。
+   这一步**故意不自动建基线**（见 `quality-gate.yml` 第 66-69 行注释）——
+   否则"慢慢变慢"会被每一轮自己批准。
 
 ---
 

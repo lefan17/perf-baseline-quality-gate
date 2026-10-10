@@ -17,3 +17,6 @@ reports/*.md
 sut/sut.db
 sut/sut.db-wal
 sut/sut.db-shm
+
+# CI 日志抓取产物（诊断用，不是源码）
+ci_logs/
