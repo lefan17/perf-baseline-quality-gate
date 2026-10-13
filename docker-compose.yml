@@ -1,0 +1,99 @@
+# 这个项目比较特殊：它**自己起被测服务（SUT）**，而不是去连一个已经跑着的服务。
+# 所以这里没有「app + db + cache」那种典型的多服务编排 ——
+# 所有服务用的是**同一个镜像**，区别只在执行哪条命令。
+#
+# 三种用法分别对应三个服务，用 profiles 隔开，避免 `docker compose up`
+# 一次把三件事全干（跑压测是 CPU 独占的，和跑看板同时来会互相污染数字）：
+#
+#   docker compose run --rm suite            # 跑平台自身用例 + 套件门禁
+#   docker compose run --rm perf-gate        # 跑压测 + 基线劣化门禁（退出码即结论）
+#   docker compose up dashboard              # 起看板，宿主 8765 可访问
+#
+# ⚠️ **未在本机验证**：开发机 Docker daemon 起不来（WSL E_ACCESSDENIED）。
+#    本文件只通过了 `docker compose -f docker-compose.yml config --quiet` 静态校验。
+#    真跑之前请在 daemon 可用的机器上执行一次 `docker compose build`。
+
+name: perf-baseline-quality-gate
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: perf-baseline-quality-gate:local
+  # PYTHONIOENCODING 在 Dockerfile 里已设；这里显式再给一份，
+  # 让「用哪个变量控制输出编码」在编排文件里可见。
+  environment:
+    PYTHONIOENCODING: utf-8
+    # 结果库走可写卷内的固定路径（见下方 volumes）。
+    QUALITY_DB: /app/var/quality.db
+    # 环境分层是**可选**的：默认 off = 不套任何档案，行为与本地一致。
+    # 要用档案就 `PERF_ENV=dev docker compose run --rm perf-gate`。
+    PERF_ENV: ${PERF_ENV:-off}
+  volumes:
+    # 命名卷而不是 bind mount 到 ./quality.db：
+    # 绑一个**尚不存在**的文件路径，Docker 会替你创建一个同名**目录**，
+    # 然后 SQLite 报 unable to open database file —— 一个很难一次看懂的错。
+    - quality-var:/app/var
+    # 报告目录 bind 出来，跑完直接能在宿主仓库里打开 Markdown。
+    - ./reports:/app/reports
+  working_dir: /app
+
+services:
+  # 用法一：跑平台自身的用例（含覆盖率门槛），并过套件门禁。
+  suite:
+    <<: *common
+    profiles: ["suite"]
+    command:
+      - python
+      - platform_cli.py
+      - suite
+      - --label
+      - docker-suite
+      # 覆盖率门槛与 CI 用同一个常量（改动见 pyproject.toml 的注释）。
+      - --
+      - --cov=bench
+      - --cov=metrics
+      - --cov=sut
+      - --cov=dashboard
+      - --cov=platform_cli
+      - --cov-report=term-missing
+      - --cov-fail-under=40
+
+  # 用法二：跑一轮真压测并判定基线劣化门禁。
+  # 退出码 0 = 放行，1 = 拦住，可直接接进流水线。
+  perf-gate:
+    <<: *common
+    profiles: ["perf"]
+    # 压测对 CPU 敏感，给它足够的资源上限，避免和看板抢。
+    cpus: 4.0
+    command:
+      - python
+      - platform_cli.py
+      - run
+      - --label
+      - docker-perf
+      - --items
+      - "20000"
+      - --step-users
+      - "10"
+      - "20"
+      - --step-duration
+      - "8"
+
+  # 用法三：只看板。它读的是同一个 quality.db。
+  dashboard:
+    <<: *common
+    profiles: ["dashboard"]
+    ports:
+      - "8765:8765"
+    command:
+      - python
+      - platform_cli.py
+      - serve
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8765"
+
+volumes:
+  quality-var:

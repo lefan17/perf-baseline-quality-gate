@@ -1,0 +1,70 @@
+# 依赖自动更新
+#
+# 每周一次，两类 ecosystem：
+#   - pip：本仓库的运行时与开发依赖
+#   - github-actions：workflow 里的 actions/* 版本
+#
+# 为什么只开 weekly 而不是 daily：
+#   这个仓库的全部卖点是"数字可复现"。依赖一天一变，
+#   量出来的基线与昨天的就不可比 —— 而依赖自动升级正是
+#   「代码没动、数字变了」最常见的原因。
+#   每周一次是"能拿到安全修复"与"基线还能维持可比性"之间的取舍。
+#
+# ⚠️ 一个容易被忽略的后果：**依赖升级会让既有基线失效**。
+#    PR 里如果只看到"bump requests 2.34.2 → 2.34.3 全绿"，
+#    那不说明性能没变，只说明性能门禁这一轮没跑或没红。
+#    所以下面给依赖类 PR 打了一组标签，便于和性能相关的改动区分开。
+
+version: 2
+
+updates:
+  # ---- Python 依赖 ----
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      # 前缀符合本仓库的 Conventional Commits 规范，
+      # 于是 scripts/check_commit_msg.py 与 commitlint 都能过。
+      prefix: "build"
+      include: "scope"
+    # 把同一个库的补丁级更新合成一个 PR，避免一周开五个 PR。
+    groups:
+      python-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    ignore:
+      # requirements.txt 头部声明了「全部用 == 钉死，因为核心卖点是数字可复现」。
+      # 主版本跳变几乎必然改变行为或数字，必须由人显式决定：
+      # 改 requirements.txt、重跑基线、必要时重设门禁阈值。
+      # 让机器人直接提一个 major 升级 PR，等于把"重新论证基线"
+      # 这件工作藏在一个看起来例行公事的 PR 里。
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ---- GitHub Actions ----
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

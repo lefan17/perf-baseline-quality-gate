@@ -1,0 +1,38 @@
+# CODEOWNERS
+#
+# 语法：<路径模式>  <@用户或@组织/团队>
+# 最后一个匹配的模式生效（不是最具体的那个），所以顺序从宽到窄写。
+#
+# ⚠️ 这是个单人仓库，所以下面全部指向同一个账号。这不是占位符 ——
+#    它表达的是**审查必须由谁负责**这件事本身已经被声明过。
+#    多人协作时，把对应行换成真正的责任人/团队即可，规则不用重写。
+#
+# 关键点：**门禁与度量的判定路径必须由最懂口径的人审**。
+# 改错一个分位数合并口径，比改错一个业务 bug 危险得多 ——
+# 后者会报错，前者会安静地给出一个看起来合理的错数字。
+
+# 默认：所有东西都要过一遍
+*                                   @lefan17
+
+# ---- 度量口径与门禁判定：改这里等于改"什么算劣化" ----
+/metrics/                           @lefan17
+/gate_rules.yaml                    @lefan17
+/bench/                             @lefan17
+
+# ---- CI 与工程化外壳 ----
+/.github/                           @lefan17
+/Dockerfile                         @lefan17
+/docker-compose.yml                 @lefan17
+/pyproject.toml                     @lefan17
+/requirements.txt                   @lefan17
+/requirements-dev.txt               @lefan17
+/requirements.lock                  @lefan17
+/.pre-commit-config.yaml            @lefan17
+
+# ---- 测试：不许为了让门槛达标而改这里 ----
+/tests/                             @lefan17
+
+# ---- 文档：实测数字是仓库的卖点，改动需要同等审查 ----
+/README.md                          @lefan17
+/docs/                              @lefan17
+/CHANGELOG.md                       @lefan17

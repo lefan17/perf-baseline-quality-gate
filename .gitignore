@@ -20,3 +20,16 @@ sut/sut.db-shm
 
 # CI 日志抓取产物（诊断用，不是源码）
 ci_logs/
+
+# 各类工具缓存（都是可重建的产物，进仓库只会制造无意义的 diff）
+.mypy_cache/
+.ruff_cache/
+.pip-tools-cache/
+*.egg-info/
+build/
+dist/
+
+# 本地覆写的环境变量（例如把自己的 PERF_ENV / QUALITY_DB 写在里面）。
+# 注意：真正的环境档案在 scripts/envs/*.env，那些是**要入库**的，
+# 不在本忽略范围内 —— 它们是要被审查的配置，不是个人偏好。
+.env

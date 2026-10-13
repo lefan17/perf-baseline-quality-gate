@@ -119,6 +119,33 @@
 ## 二、快速开始
 
 ```powershell
+# 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
+pwsh -File scripts\run.ps1 -Task setup
+
+# 2. 跑平台自身的测试（135 passed，约 46 秒）
+pwsh -File scripts\run.ps1 -Task test
+
+# 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
+pwsh -File scripts\run.ps1 -Task perf
+```
+
+Linux / macOS / Git Bash 用 `scripts/run.sh`，任务名与退出码语义完全一致。
+
+`-Task help` **打印将要执行的命令但不真跑**：
+
+```powershell
+pwsh -File scripts\run.ps1 -Task help
+```
+
+这不是"另写一份文档"——`help` 与真正执行的命令来自脚本里**同一份定义**，
+所以两者不可能漂移。之所以做成脚本而不是继续手敲下面这段，是因为它有
+一条不会在报错里体现的前提：漏掉 `PYTHONIOENCODING` 的表现是
+「中文报告打崩」而不是「命令失败」，很容易被误判成平台 bug。
+
+<details>
+<summary>不用脚本时的手敲命令（等价 —— 脚本只是把它固化了）</summary>
+
+```powershell
 # 1. 建虚拟环境并装依赖（Windows / PowerShell）
 python -m venv .venv
 & ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -137,8 +164,10 @@ $env:PYTHONIOENCODING="utf-8"
 & ".\.venv\Scripts\python.exe" platform_cli.py noise --rounds 5
 ```
 
+</details>
+
 > `$env:PYTHONIOENCODING="utf-8"` 在 Windows 上不是可选项：
-> 控制台默认 GBK 编码，中文报告会直接打崩。
+> 控制台默认 GBK 编码，中文报告会直接打崩。一键脚本里已经设好了。
 
 ### 命令行一览
 
@@ -153,6 +182,7 @@ $env:PYTHONIOENCODING="utf-8"
 | `gate --run-id X` | 对已入库的 run 重跑门禁（改阈值后复盘的入口） | 0/1 |
 | `noise --rounds 5` | **量出本机的运行间波动**，用来定劣化容忍带（不自动改配置） | 0 |
 | `serve` | 起看板（含 `/gate` JSON API） | 0 |
+| `env` | 显示当前环境档案（`PERF_ENV`）与生效变量 | 0 |
 
 CI 可以直接调看板的结构化判定，不用解析 stdout：
 
@@ -466,3 +496,203 @@ pytest 9.1.1 · Playwright 未使用 · 无前端构建链 · 无分布式压测
 `>=` 会让"今天能重现的数"和"下周能重现的数"跑在两套不同版本的库上。
 代价是升级要显式改一行，这是有意为之：依赖变更应当是一次提交，
 而不是 CI 某天早上自己发生的事。
+
+一键脚本：`scripts/run.ps1`（Windows / PowerShell）与 `scripts/run.sh`
+（Linux / macOS / Git Bash），任务与退出码语义一致。
+覆盖率门槛、mypy / ruff 的严格度、锁文件生成方式，全部写在
+`pyproject.toml` 与 `CONTRIBUTING.md` 里，不散落在 CI YAML 中。
+
+---
+
+## 九、工程化外壳（可被追问的部分）
+
+> 这一节里的**所有数字都是在本机实测的**，与前面几节同一标准；
+> 而**本机跑不了的三件事在表里明确标为"未验证"** ——
+> 这不是遗漏，是这里的规矩：不给没有证据的绿灯。
+
+### 1. 容器化
+
+`Dockerfile`（`python:3.12-slim`）+ `docker-compose.yml`，三种用法用
+profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相污染数字：
+
+| 命令 | 做什么 |
+|---|---|
+| `docker compose run --rm suite` | 跑平台自身用例 + 覆盖率门槛 + 套件门禁 |
+| `docker compose run --rm perf-gate` | 跑压测 + 基线劣化门禁（**退出码即结论**） |
+| `docker compose up dashboard` | 起看板，宿主 `8765` 可访问 |
+
+编排上的两个刻意选择：
+
+- **不设 `PERF_ENV`**：容器内外默认行为必须逐字节一致，否则
+  "同一份代码量出不同数"会变得无法解释；
+- **结果库走命名卷**而非 bind mount 到 `./quality.db` ——
+  绑一个尚不存在的**文件**路径时，Docker 会创建一个同名**目录**，
+  然后 SQLite 报 `unable to open database file`。
+
+> **未验证：本机未执行 `docker build`。** 开发机的 Docker daemon 起不来
+> （WSL 报 `E_ACCESSDENIED`），所以这里只做到静态校验：
+> `docker compose -f docker-compose.yml config --quiet` → 退出码 0。
+> **首次真构建请在 daemon 可用的机器上执行 `docker build -t perf-gate .`。**
+
+### 2. 覆盖率门槛
+
+覆盖率第一次被真正接进 CI —— 在此之前装了 `pytest-cov` 却从未调用过。
+
+| 口径 | 命令 | 实测 |
+|---|---|---|
+| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **1829 stmts / 1043 miss / 43%** |
+| 含 `tests/` 自身 | `--cov=.` | 2597 stmts / 1046 miss / 60% |
+
+**门槛取 40**，理由：
+
+- 低于实测 43，留 4 个点余量 —— 门槛贴着实测值时，任何一次无关改动
+  都会让 CI 变红，而"稳定变红的门槛"唯一的结局是所有人学会忽略它；
+- 也不取 30 以下 —— 那对一个 43% 的仓库存量等于没有门槛；
+- README §6 引用的 **60%** 是另一个口径，**不要拿它和 40 比**，
+  那等于拿"含自学题在内的高分"去比"专业课及格线"。
+
+已知盲区（**不假装它们不存在**）：
+
+| 模块 | 覆盖 | 为什么低 |
+|---|---:|---|
+| `sut/app.py`、`sut/db.py`、`sut/seed.py` | **0%** | SUT 跑在**子进程**里，coverage 默认不追踪子进程 |
+| `metrics/pytest_plugin.py` | **0%** | 只在 `suite` 子命令起的 pytest 子进程里被加载 |
+| `platform_cli.py` | **24%** | 压测主路径（`run` / `noise` / `prune`）要真起服务，用例只覆盖参数解析与纯函数 |
+| `metrics/store.py` | **100%** | — |
+| `sut/server_ctl.py` | **81%** | — |
+
+提高覆盖率不是目标本身。把 `sut/*` 从 0% 拉起来需要子进程追踪方案
+（`coverage run --parallel-mode` 之类），而那会改变压测进程的启动路径 ——
+在一个性能平台上，"为了覆盖率改变被测进程的启动方式"是典型的指标反噬。
+
+⚠️ 还有一个静默坑：写 `--cov` 时**必须重复写多个 `--cov=xxx`**。
+`--cov=a,b` 这种逗号写法在 pytest-cov 7.1.0 下**不报错、只是收集不到数据**，
+报告出 0% —— 一个看起来像"覆盖率极低"的真 bug。
+
+### 3. 静态检查：ruff + mypy
+
+两个工具此前都不存在（仓库里连 `pyproject.toml` 都没有）。
+**先跑真实错误量，再定范围** —— 而不是先定一个漂亮的配置再想办法凑绿。
+
+**ruff**：全默认规则集下报 **1600+ 条**，其中 **1642 条是
+`RUF001/002/003`（ambiguous-unicode-character）** ——
+这个项目通篇中文注释与中文报告，这三条规则会把全角标点全部判成问题。
+所以 select 只开**能长期零误报、且真能抓 bug 的族**：
+
+```toml
+select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
+          "RUF015","RUF022","A","T10","LOG","INT","ICN","ERA","TID","SLOT"]
+```
+
+`line-length = 120` 也是量出来的：同一份代码下 88 报 195 条 `E501`、
+100 报 37、110 报 9、**120 报 3**、140 报 0。定 140 等于这条规则失效；
+定 88 会产出上百条与"代码对不对"无关的噪声。剩下 3 条超出者全部落在
+`metrics/analysis.py` 与 `metrics/store.py`（本次不动业务代码），
+因此 `E501` 不进 select，并如实记在这里。
+
+**mypy**：加 `--explicit-package-bases` 后全仓真实错误 **5 个**，
+分布在 5 个文件；不加这个 flag 会直接报
+`bench: error: Duplicate module named "__main__" (also at "metrics")`
+并**一行有效结论都没有**。5 个错误里 4 个落在本次"只动工程化外壳"的
+边界之外（`metrics/gate.py`、`metrics/analysis.py`、`dashboard/app.py`、
+`sut/server_ctl.py`）→ 用 `[[tool.mypy.overrides]]` 的
+**`disable_error_code` 逐模块按错误码登记**，而不是在源码里撒 `# type: ignore`：
+
+| 模块 | 豁免的错误码 | 站点 |
+|---|---|---|
+| `metrics.gate` | `assignment` | `gate.py:297` |
+| `metrics.analysis` | `union-attr` | `analysis.py:575` |
+| `dashboard.app` | `arg-type` | `app.py:136` |
+| `sut.server_ctl` | `attr-defined` | `server_ctl.py:66` |
+| `platform_cli` | `assignment` | `platform_cli.py`（`rows_by_mode` 容空语义） |
+
+这是**一份可枚举的欠债清单**，不是"假装没有类型"。每条豁免都做过
+承重验证：把 `module` 改成一个不存在的名字，对应的错误立刻回来 ——
+证明它豁免的确实是那一个站点，而不是把整模块静默关掉。
+
+> 诚实边界：`disable_error_code` 是**模块级**的，无法精确到行。
+> 同一个模块里将来出现同类错误也不会报 —— 这是这份配置已知的代价，
+> 接受它的原因是"整模块 `ignore_errors`"（一开始的写法）代价更大：
+> 那样连**别的**错误码也一起消失，`mypy` 会输出
+> `Success: no issues found in 15 source files`，
+> 而 5 个真实错误一个都没消失 —— 那正是这个仓库最反对的**静默放行**。
+
+### 4. 依赖锁文件与漏洞扫描
+
+- `requirements.lock` 由 `pip-tools` 从 `requirements.txt` 编译，
+  含全部传递依赖（`annotated-doc`、`anyio`、`urllib3` 等）。
+  ⚠️ 必须设 `PIP_TOOLS_CACHE_DIR` 指向仓库内：默认缓存到用户家目录，
+  在受限环境里会报 `PermissionError: [WinError 5] 拒绝访问`。
+- `.github/dependabot.yml`：`pip` + `github-actions` 两个 ecosystem，
+  weekly；主版本升级被 `ignore` 挡住 —— 依赖主版本变更会让既有基线失效，
+  这必须是人的一次显式提交，不能是 CI 某天早上自己发生的事。
+- CI 里有一个 **`security-audit` job（非阻塞）**：pip-audit 的结论依赖
+  漏洞库快照，同一个 commit 今天绿明天红是常态。做成阻塞项长期结果必然是
+  有人加 `|| true` —— 门禁照样失效，只是没人再看得见。所以结论写进
+  step summary 与 artifact，由人判断。
+
+> **未验证：本机未执行 `pip-audit`。** 沙箱拒绝 `ensurepip`
+> （`PermissionError: [WinError 5] 拒绝访问`），安装会挂起。
+> 因此 `requirements-dev.txt` 里 `pre-commit` 与 `pip-audit`
+> **刻意不写版本号** —— 未经实测的版本数字不写，而不是编一个看起来专业的。
+
+### 5. pre-commit 与提交规范
+
+`.pre-commit-config.yaml`：`pre-commit-hooks`（trailing-whitespace、
+end-of-file-fixer、check-yaml/toml/json、mixed-line-ending、detect-private-key）
++ `ruff` + `mypy` + 两个 local hook（依赖清单一致性、提交信息规范）。
+两个格式化钩子**排除** `docs/incident-encoding-20261010/` ——
+那里的 `.corrupt` 文件是按字节保真的**事故证据**，被"顺手修好"就毁了。
+
+提交信息走 Conventional Commits，**两条等价路线**：
+
+| 路线 | 命令 | 何时用 |
+|---|---|---|
+| Python（默认） | `python scripts/check_commit_msg.py <msgfile>` | pre-commit 与 CI |
+| Node | `npx --yes @commitlint/cli@19 --edit <msgfile>` | 团队本来就有 Node 时 |
+
+本机 Node 是可用的（`node --version` → `v24.16.0`，`npx --version` → `11.13.0`），
+所以 `commitlint.config.mjs` 也一并给了。**默认仍走 Python**：
+这是个纯 Python 仓库，CI 的五个 job 没有一个装 Node，
+为一个提交信息检查把"跑一次门禁"的依赖面从 Python 变成 Python + Node
+不划算。两条路线的规则必须保持等价，否则会出现"同一个提交在我机器上过、
+在你机器上不过"。
+
+### 6. CI 强化
+
+| 变化 | 为什么 |
+|---|---|
+| 三个 job 加 `cache: pip` | 每次 CI 重装全部依赖是纯浪费；缓存 key 依赖两个 requirements 文件 |
+| 五个 job 加 `timeout-minutes` | 默认 360 分钟。压测一旦卡住（服务起不来、端口被占），没人盯着就是白烧 6 小时 |
+| 加 `schedule`（`17 3 * * 1`，每周一凌晨） | 缺陷不会等到有人推代码才出现（依赖漂移、runner 镜像更新、系统时钟/调度行为变化）。**没有定时回归的性能门禁只能证明"我推代码那天没退化"** |
+| 加 `concurrency` | 同一个分支连推两次时，取消旧的那次 —— 但 **schedule 不参与取消**（夜间回归被白天的 push 顶掉是最常见的"门禁悄悄消失"） |
+| `permissions: contents: read` | 最小权限 |
+| 新增 `lint` job 作为其余 job 的前置 | 静态检查不过就没必要跑 30 分钟的压测 |
+| 失败通知用 `if: failure()` 写 `$GITHUB_STEP_SUMMARY` | **不需要任何 secret**。webhook / 邮件方案只在 workflow 注释里留了说明 —— 引用一个不存在的 secret 会让整个 workflow 报错，比没有通知更糟 |
+
+### 7. 环境分层
+
+```powershell
+$env:PERF_ENV="dev"                                    # dev / staging / prod / 不设
+& ".\.venv\Scripts\python.exe" platform_cli.py env     # 看当前生效了什么
+```
+
+档案在 `scripts/envs/{dev,staging,prod}.env`，语法只有 `KEY=VALUE`
+（**刻意不支持** shell 展开：档案是配置不是脚本，允许 `$(...)` 就等于允许
+"同一条命令在不同机器上跑出不同环境"）。三条不变量：
+
+1. **不设 `PERF_ENV` 时行为与引入分层之前逐字节一致** —— 不读、不写任何变量。
+   所以 CI 的三个 job 一行都不用改，既有基线也不会因为分层而失效。
+2. 档案**不覆盖已显式设置的环境变量**（`setdefault` 语义）：
+   命令行上 `$env:PERF_SUT_ITEMS="500"` 的意图比档案默认值更强。
+3. 档案里**只写与默认值不同的变量** —— 默认值定义在代码里，重复的那份迟早漂移。
+
+### 8. 协作模板
+
+`CONTRIBUTING.md`（三条不可让步的纪律 + 覆盖率/依赖/环境分层/CI 的口径）、
+`CODEOWNERS`、`.github/PULL_REQUEST_TEMPLATE.md`、
+`.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` + `config.yml`、
+`CHANGELOG.md`（**基于 6 条真实提交写，不编造版本号** —— 这个仓库从未打过 tag）。
+
+> **未验证：本机未执行 `pre-commit run`。** 同 §4 的原因，pre-commit 装不上。
+> 配置文件、钩子版本与 `stages` 都已写好，但**只有 CI 能证明它们能跑**。

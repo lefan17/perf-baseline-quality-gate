@@ -1,0 +1,82 @@
+# 提交前钩子。
+#
+# ⚠️ **本机未验证**：开发沙箱装不上 pre-commit（它要建自己的 venv，
+#    而沙箱拒绝 ensurepip，报 `PermissionError: [WinError 5] 拒绝访问`）。
+#    所以本文件只做到「配置正确、YAML 可解析」，**没有在本机跑过一次**
+#    `pre-commit run --all-files`。首次在可联网机器上请先跑一次
+#    `pre-commit install && pre-commit run --all-files` 再信任它。
+#
+# 设计原则：**能被 CI 复现的东西才放进钩子**。
+# 钩子只是"提前 3 秒知道"，不是唯一防线 —— 每一个 hook 都能在
+# `.github/workflows/quality-gate.yml` 里找到对应的等价步骤。
+# 反过来不成立（CI 里有覆盖率门槛，钩子里没有：那要跑 60 秒，
+# 不该压在每次 commit 上）。
+
+default_language_version:
+  python: python3.12
+
+# 钩子失败时不要自动 stash 未暂存的改动：这个仓库里有 docs/incident-encoding-20261010/
+# 那批**逐字节保真的证据文件**，任何自动改写都可能破坏证据。
+fail_fast: false
+
+repos:
+  # ---- 基础卫生 ----
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # 事故证据文件必须逐字节保留，理由见 .gitattributes 与
+        # docs/incident-encoding-20261010/README.md
+        exclude: ^docs/incident-encoding-20261010/.*\.(corrupt|txt|json)$
+      - id: end-of-file-fixer
+        exclude: ^docs/incident-encoding-20261010/.*\.(corrupt|txt|json)$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^docs/incident-encoding-20261010/
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: mixed-line-ending
+        # 统一 LF 入库，与 .gitattributes 的 `* text=auto eol=lf` 同一条纪律。
+        args: ["--fix=lf"]
+        exclude: ^docs/incident-encoding-20261010/.*\.corrupt$
+      - id: debug-statements
+
+  # ---- 静态检查（配置在 pyproject.toml，不在这里）----
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      # 刻意**不**加 ruff-format：这个仓库的代码是手写对齐的中文注释风格，
+      # 大面积 reformat 会产生一个谁都读不完的 diff，并且会动到
+      # metrics/gate.py 等本次边界外的文件。格式化留作独立议题。
+      # CI 里对应的是 `ruff format --check`，且设为非阻塞。
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.0
+    hooks:
+      - id: mypy
+        # 严格度与豁免清单在 pyproject.toml 的 [tool.mypy]，不在这里。
+        args: [--config-file=pyproject.toml]
+        # 只跑仓内模块；pass_filenames: false 是因为 mypy 读的是
+        # pyproject 的 files= 列表 —— 逐文件传参会绕过那层配置，
+        # 于是钩子与 CI 检查的范围不一致（一个经典的"钩子绿、CI 红"来源）。
+        pass_filenames: false
+
+  # ---- 依赖清单一致性 ----
+  - repo: local
+    hooks:
+      - id: deps-sync
+        name: requirements*.txt 与 pyproject.toml 依赖一致
+        entry: python scripts/check_deps_sync.py
+        language: system
+        files: ^(requirements.*\.txt|pyproject\.toml)$
+        pass_filenames: false
+
+      - id: commit-msg-conventional
+        name: 提交信息符合 Conventional Commits
+        entry: python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]

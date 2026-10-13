@@ -1,0 +1,32 @@
+# 构建上下文裁剪。原则：**只留源码**，一个字节的运行时产物都不要进镜像。
+#
+# 特别重要的一条：quality.db 与 reports/*.md 是**本机实测结果**。
+# 让它们进镜像，等于把「某次在本机量出来的数」伪装成「镜像里的基线」——
+# 这个平台的基线只能由人显式 `baseline set`，不能被 COPY 偷偷带进来。
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pip-tools-cache/
+
+.coverage
+htmlcov/
+coverage.xml
+
+quality.db
+quality.db-wal
+quality.db-shm
+reports/*.md
+ci_logs/
+
+sut/sut.db
+sut/sut.db-wal
+sut/sut.db-shm
+
+.git/
+.github/
+.gitattributes
+.gitignore

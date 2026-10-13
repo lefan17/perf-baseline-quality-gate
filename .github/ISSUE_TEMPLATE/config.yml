@@ -1,0 +1,25 @@
+# Issue 模板选择器
+#
+# 关掉"空白 issue"这个选项是刻意的。
+#
+# 理由：一个只写着「性能好像有问题」的 issue，在这个项目里无法处理 ——
+# 这个仓库的每一次判断都依赖原始输出、口径、以及"和什么比"。
+# 强制走模板不是官僚，而是让报告者在填写模板的过程中就把这些补齐，
+# 省掉一轮「你先把命令贴出来」的往返。
+#
+# 但这不等于不收非模板反馈：下面留了 config.yml 的 contact_links，
+# 把讨论类的内容导向 Discussions（如果启用）或直接导向 README 的诚实边界。
+blank_issues_enabled: false
+
+contact_links:
+  - name: 先读 README 第五节「诚实边界」
+    url: https://github.com/lefan17/perf-baseline-quality-gate/blob/main/README.md
+    about: 绝对值随机器浮动、哪些结论不能外推、哪些缺陷是故意保留的 —— 这些都已写清楚。
+
+  - name: 已知问题与故意保留的缺陷
+    url: https://github.com/lefan17/perf-baseline-quality-gate/blob/main/docs/%E5%B7%B2%E7%9F%A5%E9%97%AE%E9%A2%98.md
+    about: n1-probe 的红色是设计的一部分，不是缺陷。提 issue 前请先对照这里。
+
+  - name: 度量口径（同一个数字为什么会有两个值）
+    url: https://github.com/lefan17/perf-baseline-quality-gate/blob/main/docs/%E5%BA%A6%E9%87%8F%E5%8F%A3%E5%BE%84.md
+    about: 分位数怎么合并、单请求耗时怎么量、基线的可比性条件。

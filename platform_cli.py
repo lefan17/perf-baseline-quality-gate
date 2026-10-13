@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import uuid
@@ -62,6 +63,90 @@ def git_sha() -> str | None:
         return None
 
 
+# --------------------------------------------------------------------------- #
+# 环境分层（dev / staging / prod）
+# --------------------------------------------------------------------------- #
+ENV_PROFILE_VAR = "PERF_ENV"
+ENV_PROFILE_DIR = ROOT / "scripts" / "envs"
+
+# 只允许「安全档案名」：档案名会被拼进文件路径，不校验就等于开了一个
+# 路径穿越（`PERF_ENV=../../../etc/passwd` 会让平台去读仓库外的文件）。
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+# 这些值表示"不套任何档案"。与"没设 PERF_ENV"是同一件事 ——
+# 必须是显式的空值语义，否则 CI 里传一个空字符串会导致找不到档案而报错。
+_PROFILE_OFF = {"", "off", "none", "0", "false"}
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """解析 KEY=VALUE 档案。只支持这一种语法，刻意不实现 shell 展开。
+
+    理由：档案是**配置**，不是脚本。允许 `$(...)`、`${VAR}` 之类的东西，
+    就等于允许"同一条命令在不同机器上跑出不同环境"，而这个仓库的
+    整个卖点是数字可复现。值里允许出现 `=`（只按第一个 = 切分）。
+    """
+    values: dict[str, str] = {}
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"{path.name} 第 {lineno} 行不是 KEY=VALUE：{raw!r}")
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
+def apply_env_profile(argv: list[str] | None = None) -> str | None:
+    """按 `PERF_ENV` 套用环境档案；返回生效的档案名（没套则 None）。
+
+    ## 默认行为必须与引入本函数之前**完全一致**
+
+    没设 `PERF_ENV`（或设成 off/none/0/false）时本函数**直接返回**，
+    一个环境变量都不读也不写。CI 的三个 job 因此不需要任何改动，
+    本地 `pytest tests/ -q` 的行为也与从前逐字节相同。
+
+    ## 不覆盖已显式设置过的变量
+
+    档案里的一份值是"团队约定"，而命令行上 `$env:PERF_SUT_ITEMS="500"`
+    是"我这一次就要这个数"。后者意图更强，所以只做 `setdefault` 语义。
+    这条也让测试天然安全：conftest 用 monkeypatch 设的 `QUALITY_DB`
+    指向临时目录，套档案也覆盖不掉它，用例不会去写开发者的真实结果库。
+
+    ## 为什么不放 argparse 参数
+
+    因为档案要影响的是**子进程**的环境（SUT 是 `subprocess` 起的），
+    而不是 argv 解析结果。走环境变量是唯一能让 `sut.server_ctl` 里
+    那份 `os.environ.copy()` 自动继承到的方式。
+    """
+    name = os.environ.get(ENV_PROFILE_VAR, "").strip()
+    if name.lower() in _PROFILE_OFF:
+        return None
+
+    if not _PROFILE_NAME_RE.match(name):
+        raise SystemExit(
+            f"{ENV_PROFILE_VAR}={name!r} 不是合法的档案名"
+            f"（只允许字母/数字/下划线/连字符，长度 1-32）。"
+        )
+
+    path = ENV_PROFILE_DIR / f"{name}.env"
+    if not path.is_file():
+        available = sorted(p.stem for p in ENV_PROFILE_DIR.glob("*.env")) if ENV_PROFILE_DIR.is_dir() else []
+        raise SystemExit(
+            f"找不到环境档案：{path}\n"
+            f"可用档案：{', '.join(available) or '（无）'}\n"
+            f"档案目录：{ENV_PROFILE_DIR}"
+        )
+
+    applied: list[str] = []
+    for key, value in _parse_env_file(path).items():
+        if key in os.environ:
+            continue  # 显式设置优先，见 docstring
+        os.environ[key] = value
+        applied.append(key)
+
+    print(f"[env] profile={name} 生效 {len(applied)} 项：{', '.join(applied) or '（无）'}")
+    return name
 # --------------------------------------------------------------------------- #
 # 结构化输出
 # --------------------------------------------------------------------------- #
@@ -1029,6 +1114,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
     s.set_defaults(func=cmd_serve)
+
+    ev = sub.add_parser("env", help="显示当前环境档案与生效的变量")
+    add_json_flags(ev)
+    ev.set_defaults(func=cmd_env)
     return p
 
 
@@ -1055,8 +1144,36 @@ def _make_stdout_utf8() -> None:
             pass
 
 
+def cmd_env(args: argparse.Namespace) -> int:
+    """显示当前生效的环境档案与相关变量（不跑任何东西）。"""
+    keys = [
+        "PERF_SUT_REPORT_MODE", "PERF_SUT_N1_SUPPLIERS",
+        "PERF_SUT_ITEMS", "PERF_SUT_DB", "QUALITY_DB", "QUALITY_RUN_ID", "CI",
+    ]
+    profile = os.environ.get(ENV_PROFILE_VAR, "").strip() or "（未设 = 默认行为）"
+    payload = {
+        "profile": profile,
+        "profile_dir": str(ENV_PROFILE_DIR),
+        "available": sorted(p.stem for p in ENV_PROFILE_DIR.glob("*.env"))
+        if ENV_PROFILE_DIR.is_dir() else [],
+        "env": {k: os.environ.get(k) for k in keys},
+        "db_path": str(store.db_path()),
+    }
+    print(f"[env] PERF_ENV={profile}")
+    print(f"[env] 档案目录={ENV_PROFILE_DIR}")
+    print(f"[env] 可用档案={', '.join(payload['available']) or '（无）'}")
+    for k in keys:
+        print(f"[env]   {k}={os.environ.get(k, '(未设)')}")
+    emit(args, payload)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _make_stdout_utf8()
+    # 先套档案再解析 argv：档案决定的是**环境**（会被 SUT 子进程继承），
+    # 而 argparse 只决定这一次调用的参数。顺序反过来的话，
+    # `--help` 之类的路径也会先把档案套上 —— 没必要，也更容易误伤。
+    apply_env_profile(argv)
     args = build_parser().parse_args(argv)
     return args.func(args)
 
