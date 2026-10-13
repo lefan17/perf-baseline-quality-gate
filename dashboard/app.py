@@ -119,8 +119,10 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
         return {"run_id": run_id, "error": "no steps", "blocked": True}
     merged = _merge([dict(r) for r in rows])
     with store.tx() as conn:
-        row = conn.execute("SELECT kind, label FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        row = conn.execute("SELECT kind, label, config_json FROM runs WHERE run_id=?",
+                           (run_id,)).fetchone()
     label = row["label"] if row else ""
+    run_config = json.loads(row["config_json"] or "{}") if row else {}
     baseline = store.get_baseline("perf", label) if row and row["kind"] in ("perf", "probe") else None
     # rules 只加载一次，并**同时**喂给容忍带与门禁。
     #
@@ -133,12 +135,17 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
     # 口径必须单点定义：加载一次，两处共用。
     loaded_rules = gate.load_rules(rules or DEFAULT_RULES)
     deltas = analysis.compare_to_baseline(merged, baseline["metrics"], loaded_rules) if baseline else []
-    report = gate.evaluate_perf(merged, baseline, deltas, loaded_rules)
+    # 可比性也走单点：口径不同时不报劣化百分比，而是把 R3 标成 SKIP。
+    comparability = (
+        analysis.check_comparability(run_config, baseline.get("config")) if baseline else None
+    )
+    report = gate.evaluate_perf(merged, baseline, deltas, loaded_rules, comparability)
     return {
         "run_id": run_id,
         "label": label,
         "blocked": report.blocked,
         "metrics": merged,
+        "comparability": comparability.__dict__ if comparability else None,
         "deltas": [d.__dict__ for d in deltas],
         "results": [r.as_dict() for r in report.results],
     }

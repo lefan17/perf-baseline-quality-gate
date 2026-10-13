@@ -139,6 +139,85 @@ def tolerance_from_rules(rules: dict | None) -> tuple[float, float]:
     )
 
 
+# 两轮配置差多少就认为"不是同一套"？
+# 5% 不是统计推导出来的，是一条工程线：items 从 5000 变成 5100 是同一个实验，
+# 从 5254 变成 900 完全是另一个实验。真正的判据是"被测对象变了没有"，
+# report_mode / scenario 一律要求**精确相等**（见 check_comparability）。
+COMPARABILITY_TOLERANCE = 0.05
+
+
+@dataclass
+class Comparability:
+    """两轮（本轮 vs 基线）配置的可比性判定。
+
+    三种结局，缺一不可，因为"没法判"和"判过、没问题"在报告里必须长得不一样
+    —— 这正是 `RuleResult.skipped` 存在的理由（见 metrics/gate.py）。
+    """
+
+    verdict: str  # "ok" | "incomparable" | "unknown"
+    reasons: list[str]
+
+    def describe(self) -> str:
+        if self.verdict == "ok":
+            return "两轮配置一致，劣化百分比可比。"
+        head = ("两轮配置不可比" if self.verdict == "incomparable"
+                else "基线没有留下配置快照，无法判定可比性")
+        return f"{head}：{'；'.join(self.reasons)}"
+
+
+def _rel_diff(a: float, b: float) -> float:
+    base = max(abs(a), abs(b))
+    return 0.0 if base == 0 else abs(a - b) / base
+
+
+def check_comparability(current_config: dict | None, baseline_config: dict | None) -> Comparability:
+    """判断本轮与基线是不是"同一套实验"。
+
+    比的是**被测配置**，不是指标值：items（数据量）、并发梯度（step_users）、
+    report_mode、scenario。实测出现过 baseline `items=5254 / users=20` 与
+    current `items=900 / users=80` 比出"p95 +40.0% 劣化"—— 那个百分比没有意义，
+    因为两轮量的根本不是一回事。
+
+    `current_config` 为 None 表示调用方没提供配置（老调用路径/单元测试构造的
+    极小 baseline）：此时**不做校验**，返回 "ok"，由调用方保持原有行为。
+    """
+    if current_config is None:
+        return Comparability("ok", [])
+    if not current_config:
+        return Comparability("unknown", ["本轮没有留下配置快照（老数据），无从比对"])
+    if not baseline_config:
+        return Comparability("unknown", ["基线建立时未记录 items / 并发等配置"])
+
+    reasons: list[str] = []
+    verdict = "ok"
+
+    for key, label in (("report_mode", "报表实现"), ("scenario", "场景")):
+        b, c = baseline_config.get(key), current_config.get(key)
+        if b is not None and c is not None and b != c:
+            verdict = "incomparable"
+            reasons.append(f"{label} 从 `{b}` 变成 `{c}`")
+
+    b_items, c_items = baseline_config.get("items"), current_config.get("items")
+    if b_items is not None and c_items is not None and _rel_diff(float(b_items), float(c_items)) > COMPARABILITY_TOLERANCE:
+        verdict = "incomparable"
+        reasons.append(f"数据量 items 从 {b_items} 变成 {c_items}")
+
+    b_users = baseline_config.get("step_users") or []
+    c_users = current_config.get("step_users") or []
+    if b_users and c_users:
+        b_max, c_max = max(b_users), max(c_users)
+        if _rel_diff(float(b_max), float(c_max)) > COMPARABILITY_TOLERANCE:
+            verdict = "incomparable"
+            reasons.append(f"最高并发从 {b_max} 变成 {c_max}")
+        elif list(b_users) != list(c_users):
+            # 最高并发相同但梯度不同：量级可比，只是密度不同 —— 记录一句，不判不可比。
+            reasons.append(f"并发梯度不同（{b_users} → {c_users}），最高并发一致")
+
+    if verdict == "incomparable":
+        return Comparability("incomparable", reasons)
+    return Comparability("ok", reasons)
+
+
 def compare_to_baseline(current: dict, baseline: dict, rules: dict | None = None) -> list[Delta]:
     """P95/P99/错误率看"涨了没"，RPS 看"掉了没"（方向相反，不能一个公式套）。
 
@@ -304,10 +383,32 @@ def analyze_flaky(history: list[dict], nodeid: str = "") -> FlakyVerdict:
 def merge_step_rows(rows: list[dict]) -> dict:
     """从入库（或刚跑完）的步骤行重建整轮汇总。
 
-    ## 分位数取各梯度的最大值，而不是重算
+    ## 尾比分位数必须成对来自同一梯度
 
-    原始样本没有入库（入库的是汇总），所以只能保守地取最差的那一级。
-    这对门禁而言是安全方向：不会因为合并方式把劣化抹平。
+    `p95_ms` / `p99_ms` **不是**各自取各梯度的最大值，而是
+    「P99/P95 比值最大的那一级」的**成对**取值。
+
+    这条是踩出来的。门禁 R5 判的是 `P99/P95` 这个**比值**，
+    而"各自取 max"在比值上不是保守方向，是**系统性掩盖**：
+
+        梯度1  P95=50   P99=300  → 该级真实比值 6.00（应当拦住）
+        梯度2  P95=200  P99=210  → 该级真实比值 1.05
+        各自取 max → P95=200 P99=300 → 比值 1.50 → R5 判 passed
+
+    两个分位数来自两个不同的梯度，比值就不再对应任何一次真实测量：
+    它把"某一级有长尾"和"另一级整体偏慢"拼成了一个从未发生过的组合，
+    结果是把 6.00 的抖动稀释成 1.50 —— 漏报。
+
+    取"比值最大的那一级"让这两个数重新落在同一量纲上，而且仍是保守方向：
+    给出的是真实发生过的**最坏尾比**。
+    比值相同（浮点容差内）时取 `p95_ms` 更大的一级，
+    保持原先"取最差一级"的语义。
+
+    原始样本没有入库（入库的是汇总），所以无法重算真实分位数 ——
+    这一点没变；变的只是**在比值类判定上怎么取才真的保守**。
+
+    `p50_ms` / `p90_ms` / `max_ms` 仍各自取最大值：它们是独立指标，
+    不参与任何比值判定，"取最差一级"对它们就是保守方向。
 
     ## 这个函数是整轮汇总的唯一出口
 
@@ -315,11 +416,11 @@ def merge_step_rows(rows: list[dict]) -> dict:
 
     曾经 `run` 手里还有原始样本，于是用 `bench.engine.merge_stats`
     把所有梯度的样本**池化**后重算分位数；而 `gate` 拿不到样本，
-    只能取最大值。同一个 run 于是有两个不同的 P95：
+    只能取最差一级。同一个 run 于是有两个不同的 P95：
 
         各梯度 p95 = [83.8, 128.9]
         池化（merge_stats）  → 105.9 ms
-        取 max（本函数）     → 128.9 ms
+        取最差一级（本函数） → 128.9 ms
 
     **报告上的数字和门禁据以拦人的数字对不上。**
     它不会报错、不会变红，只会在某天有人问
@@ -343,6 +444,17 @@ def merge_step_rows(rows: list[dict]) -> dict:
     else:
         # 没有时长信息（老数据）时退化为均值，至少不凭空翻倍。
         rps = (sum(r["rps"] for r in rows) / len(rows)) if rows else 0.0
+
+    # 尾比 p95/p99 取"比值最大的那一级"的成对值 —— 见 docstring：
+    # 各自取 max 会拼出一个从未发生过的组合，把真实的长尾稀释掉。
+    # 比值打平时依次比较 p95_ms、p99_ms，保持"取最差一级"的语义。
+    worst_tail = max(
+        ((r["p99_ms"] / r["p95_ms"]) if r["p95_ms"] > 0 else 0.0, r["p95_ms"], r["p99_ms"])
+        for r in rows
+    ) if rows else None
+    p95_worst = worst_tail[1] if worst_tail else 0
+    p99_worst = worst_tail[2] if worst_tail else 0
+
     return {
         "total": total,
         "duration_s": duration,
@@ -352,8 +464,8 @@ def merge_step_rows(rows: list[dict]) -> dict:
         # 最差一级代表"这轮最坏到什么程度"，也是交给门禁的那个数。
         "p50_ms": max((r["p50_ms"] for r in rows), default=0),
         "p90_ms": max((r["p90_ms"] for r in rows), default=0),
-        "p95_ms": max((r["p95_ms"] for r in rows), default=0),
-        "p99_ms": max((r["p99_ms"] for r in rows), default=0),
+        "p95_ms": p95_worst,
+        "p99_ms": p99_worst,
         "max_ms": max((r["max_ms"] for r in rows), default=0),
         # 实际在途取最大：它回答的是"压测机有没有成为瓶颈"，
         # 取整轮中并发真正打满的那一级才有意义。
@@ -394,11 +506,16 @@ def moving_direction(series: list[float], window: int = 3) -> str:
 # 报告文本
 # --------------------------------------------------------------------------- #
 def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[Delta],
-                       knee: dict | None, platform_info: dict, config: dict) -> str:
+                       knee: dict | None, platform_info: dict, config: dict,
+                       comparability: "Comparability | None" = None) -> str:
     """生成一页纸的压测报告（Markdown）。
 
     这份文本是给人看的，也是给面试官看的：**它必须能自己解释自己**
     —— 环境是什么、口径是什么、结论的边界在哪，都在同一页里。
+
+    `comparability` 传入且判定非 "ok" 时，「与基线对比」整段换成"无法判定可比性"：
+    照样把差异列出来供参考，但**不写劣化判定** —— 一段没有判定的话，
+    比一段看起来像判定的错话安全。
     """
     lines: list[str] = []
     lines.append(f"# 压测报告 · {label}")
@@ -451,7 +568,23 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
             "注意这不等于「系统没上限」，只等于「上限在这条曲线之外」——要下容量结论必须继续加压。"
         )
     lines.append("")
-    if deltas:
+    incomparable = comparability is not None and comparability.verdict != "ok"
+    if incomparable:
+        lines.append("## 与基线对比")
+        lines.append("")
+        lines.append(f"**本轮的劣化百分比不可用** —— {comparability.describe()}。")
+        if deltas:
+            lines.append("")
+            lines.append("下列差异**仅供参考，不构成劣化判定**（两轮测的不是同一套配置）：")
+            for d in deltas:
+                mark = "🔴" if d.degraded else ("🟢" if d.improved else "⚪")
+                lines.append(f"- {mark} {d.describe()}")
+        lines.append("")
+        lines.append("**判定：无法判定可比性。**")
+        lines.append("")
+        lines.append("要拿到可比的结论，二选一：用与基线相同的配置复跑本轮，"
+                     "或在当前配置上用 `--set-baseline` 重建基线。")
+    elif deltas:
         lines.append("## 与基线对比")
         lines.append("")
         for d in deltas:

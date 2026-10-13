@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS baselines (
     run_id      TEXT NOT NULL,
     set_at      TEXT NOT NULL,
     metrics_json TEXT NOT NULL,
+    -- 建立基线那一刻的**被测配置**快照（items / report_mode / step_users）。
+    -- 没有它就分不清"变慢了"和"测的不是一回事"：实测出现过 baseline
+    -- users=20 items=5254 与 current users=80 items=900 直接比出
+    -- "p95 +40.0% 劣化"—— 两轮根本不可比。老库由 `_migrate()` 补列。
+    config_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (kind, label)
 );
 
@@ -127,9 +132,22 @@ def tx():
         conn.close()
 
 
+def _add_baseline_config_column(conn) -> None:
+    """给 `baselines` 补 `config_json` 列（幂等）。
+
+    `CREATE TABLE IF NOT EXISTS` 对**已存在**的表什么都不做，所以老库必须靠
+    `ALTER TABLE ... ADD COLUMN` 才能拿到新列 —— 否则升级后第一次 `set_baseline`
+    会直接报 "no such column"。缺列时补上，已有则不动，重复调用无副作用。
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(baselines)")}
+    if "config_json" not in cols:
+        conn.execute("ALTER TABLE baselines ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'")
+
+
 def init_db() -> None:
     with tx() as conn:
         conn.executescript(SCHEMA)
+        _add_baseline_config_column(conn)
 
 
 # --------------------------------------------------------------------------- #
@@ -244,17 +262,29 @@ def get_baseline(kind: str, label: str) -> dict | None:
         "run_id": row["run_id"],
         "set_at": row["set_at"],
         "metrics": json.loads(row["metrics_json"]),
+        # 老库/手工插入的行可能是 '{}'，统一读成空 dict：
+        # "没有配置记录"和"配置是空的"对可比性校验是同一种处境。
+        "config": json.loads(row["config_json"] or "{}"),
     }
 
 
-def set_baseline(kind: str, label: str, run_id: str, metrics: dict) -> None:
+def set_baseline(kind: str, label: str, run_id: str, metrics: dict,
+                 config: dict | None = None) -> None:
+    """设定基线。`config` 是被测配置快照（items / report_mode / step_users）。
+
+    不带 `config` 的老调用方式仍然可用（写空快照），但那意味着**这条基线没法
+    参与可比性校验** —— 校验会以 `skipped` 报"无法判定"，而不是默默放行。
+    """
     init_db()
     with tx() as conn:
         conn.execute(
-            "INSERT INTO baselines(kind, label, run_id, set_at, metrics_json) VALUES (?,?,?,?,?)"
+            "INSERT INTO baselines(kind, label, run_id, set_at, metrics_json, config_json)"
+            " VALUES (?,?,?,?,?,?)"
             " ON CONFLICT(kind, label) DO UPDATE SET run_id=excluded.run_id,"
-            " set_at=excluded.set_at, metrics_json=excluded.metrics_json",
-            (kind, label, run_id, now_iso(), json.dumps(metrics, ensure_ascii=False)),
+            " set_at=excluded.set_at, metrics_json=excluded.metrics_json,"
+            " config_json=excluded.config_json",
+            (kind, label, run_id, now_iso(), json.dumps(metrics, ensure_ascii=False),
+             json.dumps(config or {}, ensure_ascii=False)),
         )
 
 

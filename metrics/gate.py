@@ -304,11 +304,17 @@ def _row_diffs(agg_rows: list[dict], n1_rows: list[dict]) -> tuple[list[str], in
     return diffs, len(set(agg_idx) - set(n1_idx))
 
 
-def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules: dict) -> GateReport:
+def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules: dict,
+                  comparability=None) -> GateReport:
     """性能门禁。
 
     `run_metrics` 是"本轮整轮"的汇总（含 p95_ms/p99_ms/error_rate/rps），
     `deltas` 是相对基线的差异列表。
+
+    `comparability` 是 `analysis.Comparability`（可选）。传了它、且判定为
+    "不可比 / 无法判定"时，R3 走 `skipped` —— **不给劣化百分比**。这是刻意的：
+    把两轮不同配置的差值当成劣化，比不给结论危险得多。不传则保持原行为
+    （老调用路径与单元测试构造的极小 baseline 都不带配置）。
     """
     report = GateReport()
     perf = rules.get("perf", {})
@@ -364,18 +370,35 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
         detail = "；".join(
             f"{d.metric} {d.pct_text()}（基线 {d.baseline:.1f}）" for d in degraded
         ) or "全部指标在容忍带内"
-        report.results.append(
-            RuleResult(
-                rule_id="R3-baseline-degradation",
-                passed=not degraded,
-                severity=BLOCKING,
-                message=f"相对基线劣化 {len(degraded)} 项：{detail}",
-                observed={d.metric: d.current for d in degraded},
-                expected=f"涨幅均 ≤ 容忍带",
-                action="定位这一步的提交：先用 `--scenario slow_report` 单场景复压，"
-                       "排除其它场景的干扰，再对照两次的 SQL 与索引。",
+        if comparability is not None and comparability.verdict != "ok":
+            # "无法判定"不是"通过"：passed=False + skipped=True，既不进 blocked，
+            # 也不会在报告里长得像一条通过的规则。
+            report.results.append(
+                RuleResult(
+                    rule_id="R3-baseline-degradation",
+                    passed=False,
+                    severity=WARNING,
+                    skipped=True,
+                    message=comparability.describe(),
+                    observed={d.metric: d.current for d in deltas},
+                    expected="两轮被测配置一致（items / 并发 / report_mode / scenario）",
+                    action="基线不可比时不要读劣化百分比：要么用与基线相同的配置复跑本轮，"
+                           "要么用 `python -m platform_cli baseline set` 在当前配置上重建基线。",
+                )
             )
-        )
+        else:
+            report.results.append(
+                RuleResult(
+                    rule_id="R3-baseline-degradation",
+                    passed=not degraded,
+                    severity=BLOCKING,
+                    message=f"相对基线劣化 {len(degraded)} 项：{detail}",
+                    observed={d.metric: d.current for d in degraded},
+                    expected=f"涨幅均 ≤ 容忍带",
+                    action="定位这一步的提交：先用 `--scenario slow_report` 单场景复压，"
+                           "排除其它场景的干扰，再对照两次的 SQL 与索引。",
+                )
+            )
 
     # R4 样本量不足 —— 只警告。用它挡住"用 5 个请求的结论下判断"。
     min_total = thresholds.get("min_total_requests", 0)

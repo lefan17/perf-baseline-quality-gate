@@ -185,8 +185,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 结果是**报告上的数字和门禁据以拦人的数字对不上** ——
         # 出了争议没人能解释到底哪个是真的。
         #
-        # 现在统一取最差梯度：对门禁是安全方向（不会把劣化抹平），
-        # 且 Report 与 Gate 必然自洽。
+        # 尾部 p95/p99 成对取自比值最大的那一级，其余分位取最差梯度：对门禁是
+        # 安全方向（不会把劣化抹平），且 Report 与 Gate 必然自洽。
         merged = _merge_from_rows(step_dicts)
 
         knee = analysis.find_knee(step_dicts)
@@ -195,13 +195,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         deltas = (
             analysis.compare_to_baseline(run_metrics, baseline["metrics"], rules) if baseline else []
         )
+        # 基线可比性：口径不同（数据量/并发/场景/报表实现）时，劣化百分比没有意义。
+        comparability = (
+            analysis.check_comparability(config, baseline.get("config")) if baseline else None
+        )
 
-        report = gate.evaluate_perf(run_metrics, baseline, deltas, rules)
+        report = gate.evaluate_perf(run_metrics, baseline, deltas, rules, comparability)
         store.add_gate_results(run_id, [r.as_dict() for r in report.results])
         status = "failed" if report.blocked else "passed"
         store.finish_run(run_id, status, {"knee": knee, **run_metrics})
 
-        text = analysis.render_perf_report(run_id, label, step_dicts, deltas, knee, info, config)
+        text = analysis.render_perf_report(run_id, label, step_dicts, deltas, knee, info, config,
+                                           comparability)
         text += "\n\n" + report.render() + "\n"
         REPORTS_DIR.mkdir(exist_ok=True)
         out_path = REPORTS_DIR / f"{run_id}.md"
@@ -209,7 +214,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"\n[report] {out_path}")
         print(report.render())
         if args.set_baseline:
-            store.set_baseline("perf", label, run_id, run_metrics)
+            store.set_baseline("perf", label, run_id, run_metrics, config=config)
             print(f"[baseline] 已把本轮设为基线 kind=perf label={label} run_id={run_id}")
         emit(args, {
             "run_id": run_id,
@@ -527,7 +532,13 @@ def cmd_gate(args: argparse.Namespace) -> int:
     label = _label_of(args.run_id)
     baseline = store.get_baseline("perf", label) if label else None
     deltas = analysis.compare_to_baseline(merged, baseline["metrics"], rules) if baseline else []
-    report = gate.evaluate_perf(merged, baseline, deltas, rules)
+    # 被门禁的那轮 run 自己的配置（不是当前命令行的配置）：这是唯一正确的比法，
+    # 否则用「今天跑 gate 的环境」去比「当时那轮」的配置。
+    comparability = (
+        analysis.check_comparability(_run_config(args.run_id), baseline.get("config"))
+        if baseline else None
+    )
+    report = gate.evaluate_perf(merged, baseline, deltas, rules, comparability)
     store.add_gate_results(args.run_id, [r.as_dict() for r in report.results])
     print(f"run_id={args.run_id} label={label}")
     print(report.render())
@@ -571,7 +582,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         if metrics is None:
             print(f"run {run_id} 没有可用的指标", file=sys.stderr)
             return 2
-        store.set_baseline("perf", args.label, run_id, metrics)
+        store.set_baseline("perf", args.label, run_id, metrics, config=_run_config(run_id))
         print(f"[baseline] kind=perf label={args.label} run_id={run_id}")
         print(f"           p95={metrics['p95_ms']}ms p99={metrics['p99_ms']}ms rps={metrics['rps']}")
         emit(args, {"action": "set", "kind": "perf", "label": args.label,
@@ -602,6 +613,15 @@ def _run_metrics(run_id: str) -> dict | None:
     if not metrics:
         return None
     return metrics
+
+
+def _run_config(run_id: str) -> dict:
+    """读一轮运行的被测配置快照（runs.config_json）。读不到就返回空 dict。"""
+    with store.tx() as conn:
+        row = conn.execute("SELECT config_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    if row is None:
+        return {}
+    return json.loads(row["config_json"] or "{}")
 
 
 def cmd_trend(args: argparse.Namespace) -> int:

@@ -105,6 +105,86 @@ class TestCompareToBaseline:
         assert [d.metric for d in deltas] == ["p95_ms"]
 
 
+class TestBaselineComparability:
+    """两轮配置不同时，"劣化 40%"是假的 —— 平台上真的发生过。
+
+    实测现场：baseline `items=5254 / 最高并发 20`，current `items=900 / 最高并发 80`，
+    报告照样打出"p95 +40.0% 劣化"。两轮量的不是同一回事，那个百分比没有意义。
+    三种结局必须分得开：ok / incomparable / unknown。
+    """
+
+    def test_same_config_is_comparable(self):
+        cfg = {"items": 20000, "report_mode": "agg", "scenario": "(mix)", "step_users": [10, 20]}
+        assert analysis.check_comparability(cfg, dict(cfg)).verdict == "ok"
+
+    def test_different_items_is_incomparable(self):
+        v = analysis.check_comparability(
+            {"items": 900, "report_mode": "agg"},
+            {"items": 5254, "report_mode": "agg"},
+        )
+        assert v.verdict == "incomparable"
+        assert any("items" in r for r in v.reasons)
+
+    def test_different_report_mode_is_incomparable(self):
+        """agg 与 n1 是两种报表实现，混比等于把 N+1 的耗时当劣化。"""
+        v = analysis.check_comparability(
+            {"items": 20000, "report_mode": "n1"},
+            {"items": 20000, "report_mode": "agg"},
+        )
+        assert v.verdict == "incomparable"
+
+    def test_different_top_concurrency_is_incomparable(self):
+        v = analysis.check_comparability(
+            {"items": 20000, "step_users": [10, 20, 40, 80]},
+            {"items": 20000, "step_users": [10, 20]},
+        )
+        assert v.verdict == "incomparable"
+        assert any("并发" in r for r in v.reasons)
+
+    def test_missing_baseline_config_is_unknown_not_ok(self):
+        """"老基线没记配置"是"无法判定"，不是"没问题"。"""
+        v = analysis.check_comparability({"items": 20000}, {})
+        assert v.verdict == "unknown"
+
+    def test_no_current_config_keeps_legacy_behaviour(self):
+        """老调用路径不传配置 → 不做校验，保持原有行为不变。"""
+        assert analysis.check_comparability(None, {"items": 1}).verdict == "ok"
+
+    def test_incomparable_baseline_turns_r3_into_a_skip(self):
+        """不可比时 R3 必须是 SKIP：既不 blocked，也不写成"劣化 0 项"。"""
+        current = {"items": 900, "report_mode": "agg", "step_users": [80]}
+        baseline_cfg = {"items": 5254, "report_mode": "agg", "step_users": [20]}
+        comparability = analysis.check_comparability(current, baseline_cfg)
+        # 指标层面确实"劣化"了 40%，但两轮配置不可比 —— 这个百分比不该进判定。
+        deltas = analysis.compare_to_baseline({"p95_ms": 140.0}, {"p95_ms": 100.0})
+        report = gate.evaluate_perf(
+            _perf_run(p95_ms=140.0),
+            {"metrics": {"p95_ms": 100.0}, "config": baseline_cfg},
+            deltas, RULES, comparability,
+        )
+        r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
+        assert r3.skipped and not r3.passed
+        assert r3.severity == gate.WARNING
+        assert not report.blocked
+        assert "不可比" in r3.message
+        assert "items" in r3.message  # 说清为什么不可比，而不是一句"不可比"
+        # 关键：报告里不能出现一个看起来像结论的劣化百分比。
+        assert "劣化 1 项" not in r3.message
+
+    def test_comparable_baseline_still_blocks(self):
+        """配置一致时旧行为原样保留：该拦还是拦。"""
+        cfg = {"items": 20000, "report_mode": "agg", "step_users": [10, 20]}
+        deltas = analysis.compare_to_baseline({"p95_ms": 140.0}, {"p95_ms": 100.0})
+        report = gate.evaluate_perf(
+            _perf_run(p95_ms=140.0),
+            {"metrics": {"p95_ms": 100.0}, "config": cfg},
+            deltas, RULES, analysis.check_comparability(cfg, dict(cfg)),
+        )
+        r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
+        assert not r3.skipped and not r3.passed
+        assert report.blocked
+
+
 # --------------------------------------------------------------------------- #
 # 拐点
 # --------------------------------------------------------------------------- #
@@ -305,6 +385,59 @@ class TestPerfGate:
             assert r.action, f"{r.rule_id} 缺少处理建议"
 
 
+class TestTailRatioIsMeasuredOnOneStep:
+    """R5 的 P99/P95 必须来自**同一个梯度**。
+
+    这条是踩出来的：`merge_step_rows` 原先让各分位数**各自取 max**，
+    于是 P95 可能来自 A 级、P99 来自 B 级，比值对应的是一个
+    **从未发生过的组合**。R5 判的偏偏就是这个比值 ——
+    "各自取 max"在比值上不是保守方向，而是系统性掩盖。
+
+    构造（真实能出现的一组数据）：
+
+        梯度1  P95=50   P99=300  → 该级真实比值 6.00（> 4，应拦）
+        梯度2  P95=200  P99=210  → 该级真实比值 1.05
+
+    旧口径：P95=200 P99=300 → 1.50 → R5 判 **passed**（漏报）
+    新口径：取比值最大的那一级 → 50/300 → 6.00 → R5 判 **FAIL**
+    """
+
+    ROWS = [
+        {"total": 1000, "duration_s": 10.0, "error_count": 0, "rps": 100.0, "mean_ms": 20.0,
+         "p50_ms": 30.0, "p90_ms": 45.0, "p95_ms": 50.0, "p99_ms": 300.0, "max_ms": 400.0,
+         "max_inflight": 10},
+        {"total": 1000, "duration_s": 10.0, "error_count": 0, "rps": 100.0, "mean_ms": 60.0,
+         "p50_ms": 150.0, "p90_ms": 190.0, "p95_ms": 200.0, "p99_ms": 210.0, "max_ms": 220.0,
+         "max_inflight": 20},
+    ]
+
+    def test_tail_ratio_comes_from_a_single_step(self):
+        merged = analysis.merge_step_rows(self.ROWS)
+        # 成对取值：不是 200/300，而是比值最大的那一级的 50/300。
+        assert (merged["p95_ms"], merged["p99_ms"]) == (50.0, 300.0)
+        assert merged["p99_ms"] / merged["p95_ms"] == pytest.approx(6.0)
+
+    def test_tail_jitter_fails_where_naive_max_would_pass(self):
+        """判别力所在：旧口径下这条用例会红。"""
+        merged = analysis.merge_step_rows(self.ROWS)
+        # 旧口径（各自取 max）会拼出的那个组合：
+        naive = {"p95_ms": 200.0, "p99_ms": 300.0}
+        assert naive["p99_ms"] / naive["p95_ms"] <= RULES["perf"]["thresholds"]["p99_over_p95_max"]
+
+        run = _perf_run(p95_ms=merged["p95_ms"], p99_ms=merged["p99_ms"])
+        r5 = next(r for r in gate.evaluate_perf(run, None, [], RULES).results
+                  if r.rule_id == "R5-tail-jitter")
+        assert not r5.passed, "同一梯度内 6.00 的尾比必须被判 FAIL"
+        assert r5.severity == gate.WARNING
+
+    def test_other_percentiles_still_take_the_worst_step(self):
+        """p50/p90/max 不参与比值判定，仍各自取最差一级。"""
+        merged = analysis.merge_step_rows(self.ROWS)
+        assert merged["p50_ms"] == 150.0
+        assert merged["p90_ms"] == 190.0
+        assert merged["max_ms"] == 400.0
+
+
 class TestProbeGate:
     def test_healthy_ratio_passes(self):
         assert not gate.evaluate_probe({"agg": 10.0, "n1": 30.0}, RULES).blocked
@@ -407,6 +540,42 @@ class TestStore:
         store.upsert_run("r9", "perf", "lab")
         store.finish_run("r9", "passed", {"p95_ms": 999.0})
         assert store.get_baseline("perf", "lab")["run_id"] == "r1"
+
+    def test_baseline_config_snapshot_roundtrip(self):
+        """基线要连"当时被测的是什么"一起存，否则事后无从判断可比性。"""
+        store.set_baseline("perf", "lab", "r1", {"p95_ms": 10.0},
+                           config={"items": 20000, "report_mode": "agg", "step_users": [10, 20]})
+        b = store.get_baseline("perf", "lab")
+        assert b["config"]["items"] == 20000
+        assert b["config"]["step_users"] == [10, 20]
+
+    def test_baseline_without_config_reads_as_empty(self):
+        """不带 config 的老调用方式仍可用，但快照读出来是空 dict（→ 校验报 unknown）。"""
+        store.set_baseline("perf", "lab2", "r1", {"p95_ms": 10.0})
+        assert store.get_baseline("perf", "lab2")["config"] == {}
+
+    def test_old_database_gets_the_config_column_added(self):
+        """老库没有 config_json 列，升级后必须能自动补上（幂等 ALTER TABLE）。
+
+        直接用一份"旧版 schema"建库，再调 init_db()，模拟真实的升级路径：
+        不补列的话，第一次 set_baseline 就会 `no such column: config_json`。
+        """
+        import sqlite3
+
+        db = store.db_path()
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE baselines (kind TEXT NOT NULL, label TEXT NOT NULL, run_id TEXT NOT NULL,"
+            " set_at TEXT NOT NULL, metrics_json TEXT NOT NULL, PRIMARY KEY (kind, label))"
+        )
+        conn.commit()
+        conn.close()
+
+        store.init_db()  # 应当就地补列，而不是抛异常
+        store.init_db()  # 再调一次：幂等，不重复 ALTER
+        store.set_baseline("perf", "old", "r1", {"p95_ms": 10.0}, config={"items": 5})
+        assert store.get_baseline("perf", "old")["config"]["items"] == 5
 
     def test_add_steps_accepts_stats_and_dicts(self):
         from bench.engine import summarize, Sample

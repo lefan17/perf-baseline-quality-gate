@@ -21,6 +21,9 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import pytest
 import requests
 
@@ -276,3 +279,46 @@ def test_probe_write_path_slower_than_read_path(base):
         "若写路径真的被优化了（例如去掉了 BEGIN IMMEDIATE 的两次往返），"
         "请更新 docs/已知问题.md 的 P-3 并同步调整阈值。"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 临时目录的回收
+# --------------------------------------------------------------------------- #
+class TestTempDirCleanup:
+    """起服务时 mkdtemp 出来的目录必须被收回。
+
+    这不是洁癖：`start_sut` 每组会建一个 db 目录和一个 log 目录，而
+    清理逻辑曾经**完全不存在** —— 系统 Temp 下累积了 289 组 `perf-sut-*`。
+    一个每次跑都留垃圾的平台，会让"跑过几次"变成一种代价。
+    """
+
+    def test_stop_removes_the_dirs_it_created(self):
+        handle = start_sut(report_mode="agg", items=50)
+        dirs = list(handle.tmp_dirs)
+        assert len(dirs) == 2, "应当自己建了 db 与 log 两个目录"
+        assert all(Path(d).exists() for d in dirs)
+        handle.stop()
+        assert not any(Path(d).exists() for d in dirs), f"stop() 之后仍在：{dirs}"
+
+    def test_caller_supplied_dirs_are_never_deleted(self, tmp_path):
+        """调用方指定的目录不是我们的，删了就是数据事故。"""
+        db_dir = tmp_path / "mine-db"
+        log_dir = tmp_path / "mine-log"
+        db_dir.mkdir()
+        log_dir.mkdir()
+        handle = start_sut(report_mode="agg", items=50,
+                           db_path=str(db_dir / "sut.db"), log_dir=str(log_dir))
+        assert handle.tmp_dirs == []
+        handle.stop()
+        assert db_dir.exists() and log_dir.exists()
+
+    def test_keep_tmp_retains_the_dirs_for_debugging(self):
+        handle = start_sut(report_mode="agg", items=50, keep_tmp=True)
+        dirs = list(handle.tmp_dirs)
+        try:
+            handle.stop()
+            assert all(Path(d).exists() for d in dirs), "keep_tmp=True 时应当保留"
+        finally:
+            for d in dirs:
+                shutil.rmtree(d, ignore_errors=True)
+
