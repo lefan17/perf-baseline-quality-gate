@@ -258,7 +258,7 @@ jobs:
       # 基线只能由人显式设置（`baseline set`），否则
       # "慢慢变慢"会被每一轮自己批准 —— 门禁就失效了。
       - name: 恢复基线
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: quality-db-and-reports
