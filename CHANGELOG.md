@@ -48,6 +48,17 @@
   **不设 `PERF_ENV` 时行为与引入之前逐字节一致**。
 - **一键脚本**：`scripts/run.ps1` + `scripts/run.sh`，把 README 的手敲命令固化。
 
+### 修复
+
+- `598d27c` 写路径探针（`tests/test_sut_api.py::test_probe_write_path_slower_than_read_path`）
+  改为**双判据**，消除 CI 上因固定成本占比摇摆导致的偶发红。判据一改成比较
+  **扣除固定成本后**的数据库工作量（`(write - health) > (read - health) * 3`，
+  固定成本用同一窗口的 `/healthz` 量出），阈值仍是 3；判据二是新增的
+  **并发不变量**（6 线程 × 10 次 +1，失败响应数为 0 且库存精确 +60）。
+  变异检验：把 `sut/app.py:210` 的 `BEGIN IMMEDIATE` 换成延迟锁 `BEGIN` 后，
+  旧耗时候选全部照样"通过"（4.63× → 4.54×），而新判据 **EXIT=1** 报
+  "并发写出现 33 次非 201 响应"。详见 `docs/已知问题.md` P-3。
+
 ### 未验证（如实记录，不要当成已完成）
 
 - 容器镜像**未在本机构建过**：开发机 Docker daemon 起不来
