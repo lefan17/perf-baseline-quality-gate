@@ -122,8 +122,18 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
         row = conn.execute("SELECT kind, label FROM runs WHERE run_id=?", (run_id,)).fetchone()
     label = row["label"] if row else ""
     baseline = store.get_baseline("perf", label) if row and row["kind"] in ("perf", "probe") else None
-    deltas = analysis.compare_to_baseline(merged, baseline["metrics"]) if baseline else []
-    report = gate.evaluate_perf(merged, baseline, deltas, gate.load_rules(rules or DEFAULT_RULES))
+    # rules 只加载一次，并**同时**喂给容忍带与门禁。
+    #
+    # 这里曾经是 `compare_to_baseline(merged, baseline["metrics"])`（不传 rules）
+    # 而下一行 `evaluate_perf(..., gate.load_rules(rules or DEFAULT_RULES))` 传了 ——
+    # 于是同一个响应里，"哪些指标算劣化"用模块常量、"拦不拦"用 YAML。
+    # 两边当前数值恰好都是 10%，所以看不出问题；但只要有人按业务把
+    # `perf.tolerance.degradation_pct` 调成 5%，看板就会出现
+    # 「deltas 说在容忍带内、门禁却判拦住」这种自相矛盾的结论。
+    # 口径必须单点定义：加载一次，两处共用。
+    loaded_rules = gate.load_rules(rules or DEFAULT_RULES)
+    deltas = analysis.compare_to_baseline(merged, baseline["metrics"], loaded_rules) if baseline else []
+    report = gate.evaluate_perf(merged, baseline, deltas, loaded_rules)
     return {
         "run_id": run_id,
         "label": label,

@@ -70,13 +70,14 @@ class TestParserWiring:
             a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
         )
         names = set(action.choices)
-        expected = {"run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "serve"}
+        expected = {"run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise",
+                    "prune", "serve"}
         missing = expected - names
         assert not missing, f"缺少子命令：{missing}"
 
     @pytest.mark.parametrize(
         "name",
-        ["run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "serve"],
+        ["run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "prune", "serve"],
     )
     def test_help_renders_for_each_subcommand(self, name, capsys):
         """每个子命令的 --help 都要能正常渲染。

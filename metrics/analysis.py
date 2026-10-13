@@ -5,6 +5,20 @@
 `DEGRADATION_TOLERANCE`（当前 10%）、`KNEE_RPS_PER_USER_DROP`（20%）
 这些数字必须是代码里的一行，而不是某个人脑子里的印象 —— 而且它们
 是**量出来的**，不是拍的。
+
+## 容忍带从哪来
+
+`DEGRADATION_TOLERANCE` / `RPS_DEGRADATION_TOLERANCE` 是**默认值**，
+真正的值可以由 `gate_rules.yaml` 的 `perf.tolerance` 覆盖 —— 见
+`tolerance_from_rules()`。之所以两个地方都留，是因为：
+
+* `gate_rules.yaml` 的头注释承诺"阈值集中在这一处，改标准改这里"，
+  而容忍带是**最需要常改**的那个数（换机器就要重量）；
+* 但纯逻辑用例（`tests/test_platform.py`）不应该为了测一个比较函数
+  去读文件系统，所以模块常量必须能独立成立。
+
+约定：**运行时以 YAML 为准，模块常量只是它的后备**。两者不一致时
+（YAML 改了、常量没改），以 YAML 为准，这正是"集中在一处"的含义。
 """
 
 from __future__ import annotations
@@ -15,7 +29,7 @@ from statistics import median
 # --------------------------------------------------------------------------- #
 # 口径常量：改这里就是改全平台的门禁标准
 # --------------------------------------------------------------------------- #
-# 10% 以内算噪声，不判劣化。
+# 10% 以内算噪声，不判劣化。**这是默认值，运行时由 gate_rules.yaml 覆盖。**
 #
 # **这个数字是量出来的，不是拍的。** 最初写 3%（"经验下界"），
 # 实测立刻证明太紧：同一份代码、同一配置连跑两轮，
@@ -109,12 +123,34 @@ def compare_metric(
     )
 
 
-def compare_to_baseline(current: dict, baseline: dict) -> list[Delta]:
-    """P95/P99/错误率看"涨了没"，RPS 看"掉了没"（方向相反，不能一个公式套）。"""
+def tolerance_from_rules(rules: dict | None) -> tuple[float, float]:
+    """从 `gate_rules.yaml` 读出容忍带，返回 `(延迟容忍带, RPS 容忍带)`。
+
+    缺项时回落到模块常量。这不是"两个真相"：YAML 是唯一的**配置**，
+    模块常量是"没给配置时"的默认。之所以允许缺项，是因为门禁规则文件
+    可能被裁剪过（比如只保留 probe 一节），而容忍带不该让整个判定崩掉。
+    """
+    tol = ((rules or {}).get("perf") or {}).get("tolerance") or {}
+    d = tol.get("degradation_pct")
+    r = tol.get("rps_degradation_pct")
+    return (
+        DEGRADATION_TOLERANCE if d is None else float(d),
+        RPS_DEGRADATION_TOLERANCE if r is None else float(r),
+    )
+
+
+def compare_to_baseline(current: dict, baseline: dict, rules: dict | None = None) -> list[Delta]:
+    """P95/P99/错误率看"涨了没"，RPS 看"掉了没"（方向相反，不能一个公式套）。
+
+    `rules` 传入时用其中的 `perf.tolerance` 覆盖容忍带 —— 门禁规则文件里
+    写的那个数才是生效的，模块常量只是后备（见 `tolerance_from_rules`）。
+    """
+    tol_delay, tol_rps = tolerance_from_rules(rules)
     out: list[Delta] = []
     for metric in ("p95_ms", "p99_ms", "mean_ms", "max_ms"):
         if metric in baseline and metric in current:
-            out.append(compare_metric(metric, float(baseline[metric]), float(current[metric])))
+            out.append(compare_metric(metric, float(baseline[metric]), float(current[metric]),
+                                      tol_delay))
     for metric in ("error_rate",):
         if metric in baseline and metric in current:
             out.append(compare_metric(metric, float(baseline[metric]), float(current[metric]), 0.0))
@@ -127,9 +163,9 @@ def compare_to_baseline(current: dict, baseline: dict) -> list[Delta]:
                 baseline=b,
                 current=c,
                 delta_pct=pct,
-                tolerance_pct=RPS_DEGRADATION_TOLERANCE,
-                degraded=pct < -RPS_DEGRADATION_TOLERANCE - _EPS,  # RPS 掉就是坏
-                improved=pct > RPS_DEGRADATION_TOLERANCE + _EPS,
+                tolerance_pct=tol_rps,
+                degraded=pct < -tol_rps - _EPS,  # RPS 掉就是坏
+                improved=pct > tol_rps + _EPS,
             )
         )
     return out

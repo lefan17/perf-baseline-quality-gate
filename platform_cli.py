@@ -19,7 +19,7 @@ import platform
 import subprocess
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -60,6 +60,63 @@ def git_sha() -> str | None:
         return out.stdout.strip() or None
     except Exception:  # noqa: BLE001 - 没有 git 仓库不是错误
         return None
+
+
+# --------------------------------------------------------------------------- #
+# 结构化输出
+# --------------------------------------------------------------------------- #
+JSON_FLAG_HELP = "以 JSON 输出结果（给 CI/工单/PR 评论消费）"
+
+
+def add_json_flags(parser: argparse.ArgumentParser) -> None:
+    """给子命令挂上结构化输出开关。
+
+    ## 为什么必须有这个
+
+    平台有 9 个子命令，改造前**只有 `baseline show` 输出 JSON**，
+    其余全是给人看的表格。而 README 自己写过一句话：
+    「只会 `exit 1` 的门禁，在团队里的寿命大约是两周」。
+
+    退出码能让流水线红，但**不能告诉 PR 该改什么**。
+    想让门禁结论进工单/PR 评论（这才是一个门禁在团队里活下来的方式），
+    就必须有机器可读的结构化结果。
+    """
+    parser.add_argument("--json", action="store_true", help=JSON_FLAG_HELP)
+    parser.add_argument("--json-out", default=None,
+                        help="把结构化结果写到指定文件（同时仍可 --json 打到 stdout）")
+
+
+def emit(args: argparse.Namespace, payload: dict) -> None:
+    """按开关把结构化结果打到 stdout 和/或文件。
+
+    文件写法固定 `ensure_ascii=False` + UTF-8：报告里有中文，
+    写成 ASCII 转义后人在工单里读不了。
+    """
+    text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    if getattr(args, "json_out", None):
+        path = Path(args.json_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        if not getattr(args, "json", False):
+            print(f"[json] 已写入 {path}")
+    if getattr(args, "json", False):
+        print(text)
+
+
+def _delta_dicts(deltas: list) -> list[dict]:
+    return [
+        {
+            "metric": d.metric,
+            "baseline": d.baseline,
+            "current": d.current,
+            "delta_pct": None if d.delta_pct == float("inf") else d.delta_pct,
+            "tolerance_pct": d.tolerance_pct,
+            "degraded": d.degraded,
+            "improved": d.improved,
+            "text": d.pct_text(),
+        }
+        for d in deltas
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -136,7 +193,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         baseline = store.get_baseline("perf", label)
         run_metrics = merged
         deltas = (
-            analysis.compare_to_baseline(run_metrics, baseline["metrics"]) if baseline else []
+            analysis.compare_to_baseline(run_metrics, baseline["metrics"], rules) if baseline else []
         )
 
         report = gate.evaluate_perf(run_metrics, baseline, deltas, rules)
@@ -154,6 +211,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         if args.set_baseline:
             store.set_baseline("perf", label, run_id, run_metrics)
             print(f"[baseline] 已把本轮设为基线 kind=perf label={label} run_id={run_id}")
+        emit(args, {
+            "run_id": run_id,
+            "kind": "perf",
+            "label": label,
+            "status": status,
+            "blocked": report.blocked,
+            "report_path": str(out_path),
+            "config": config,
+            "metrics": run_metrics,
+            "steps": step_dicts,
+            "knee": knee,
+            "baseline_run_id": baseline["run_id"] if baseline else None,
+            "deltas": _delta_dicts(deltas),
+            "rules": [r.as_dict() for r in report.results],
+            "set_baseline": bool(args.set_baseline),
+        })
         return 1 if report.blocked else 0
     finally:
         handle.stop()
@@ -170,6 +243,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
                      platform_info=info, git_sha=git_sha())
 
     result: dict[str, dict] = {}
+    rows_by_mode: dict[str, list[dict]] = {}
     configure_item_range(args.items)
     try:
         for mode in ("agg", "n1"):
@@ -187,6 +261,13 @@ def cmd_probe(args: argparse.Namespace) -> int:
                     warmup_drop_s=args.warmup_drop,
                 )
                 st = runner.run()
+                # 取一次响应体用于**数据一致性校验**。
+                #
+                # 这里原先只取耗时（`st.as_dict()`），从不看返回了什么 ——
+                # 于是"两种实现语义等价"这个性能对比的前提，在主路径上
+                # 从来没被验证过，只在单测里成立。而这个前提恰恰是本项目
+                # 最有价值的发现（聚合扇出 SUM(stock) 虚高 2.23 倍）的来源。
+                rows_by_mode[mode] = _fetch_report_rows(handle.base_url, args.timeout)
             finally:
                 handle.stop()
             print(f"[probe] mode={mode} rps={st.rps:.2f} p95={st.p95_ms:.1f}ms "
@@ -196,7 +277,18 @@ def cmd_probe(args: argparse.Namespace) -> int:
             store.add_steps(run_id, [st])
 
         p95 = {k: v["p95_ms"] for k, v in result.items()}
-        report = gate.evaluate_probe(p95, rules)
+        # 每种模式实际采到多少个请求。`bench/engine.py` 的分位数是 nearest-rank：
+        # N < 20 时「P95」取的就是最大值 —— CI 里 n1 只跑了约 10 个样本，
+        # 打印出来的 p95 与 p99 是同一个数字（3828.6ms），那不是长尾集中，
+        # 是分位数退化了。而 P1-n1-probe 是 **BLOCKING** 规则。
+        #
+        # 所以样本量必须一起进门禁。做法与 R4 保持一致（WARNING，不翻结论），
+        # 见 metrics/gate.py 的 evaluate_probe。
+        sample_totals = {m: int(v.get("total", 0)) for m, v in result.items()}
+        # P0 先跑：数据不一致时，"谁快"这个问题本身没有意义，
+        # 所以它必须排在 P1/P2 之前，且在报告里要能一眼看到。
+        data_report = gate.evaluate_probe_data(rows_by_mode.get("agg"), rows_by_mode.get("n1"))
+        report = gate.merge(data_report, gate.evaluate_probe(p95, rules, sample_totals))
         store.add_gate_results(run_id, [r.as_dict() for r in report.results])
 
         # 入库一份**扁平**的汇总指标，而不是 {"agg": {...}, "n1": {...}} 这种嵌套形状。
@@ -239,11 +331,40 @@ def cmd_probe(args: argparse.Namespace) -> int:
             "> 这两个实现都在 `sut/app.py` 里，用 `PERF_SUT_REPORT_MODE` 切换。",
             "> n1 不是「为了压测造的假代码」，它是真实系统里最常见的性能缺陷形态。",
         ]
+        p0 = next((r for r in report.results if r.rule_id == "P0-probe-data-equivalence"), None)
+        if p0 is not None:
+            # skipped 单独一个记号：它既不是"一致"（✅）也不是"不一致"（❌），
+            # 而是"本轮没比"——三态必须分开，否则没校验会被读成校验通过。
+            mark = "⏭" if p0.skipped else ("✅" if p0.passed else "❌")
+            lines += [
+                "",
+                "## 前提校验：两种实现的数据是否一致",
+                "",
+                f"{mark} {p0.message}",
+                "",
+                "> 这一条是**速度对比的前提**，不是附加项。本项目真实踩过：",
+                "> 聚合扇出让 `SUM(stock)` 虚高 2.23 倍，而它不报错、不慢、"
+                "功能用例全绿 —— 只有把两种实现的输出逐字段比对才能发现。",
+                "> 数据不一致时，上面那个倍数不该被引用。",
+            ]
         REPORTS_DIR.mkdir(exist_ok=True)
         out_path = REPORTS_DIR / f"{run_id}.md"
         out_path.write_text("\n".join(lines) + "\n\n" + report.render() + "\n", encoding="utf-8")
         print(f"\n[report] {out_path}")
         print(report.render())
+        emit(args, {
+            "run_id": run_id,
+            "kind": "probe",
+            "label": args.label,
+            "status": "failed" if report.blocked else "passed",
+            "blocked": report.blocked,
+            "report_path": str(out_path),
+            "config": {"users": args.users, "duration_s": args.duration, "items": args.items},
+            "modes": merged.get("modes"),
+            "p95_ratio": round(ratio, 3),
+            "metrics": merged,
+            "rules": [r.as_dict() for r in report.results],
+        })
         return 1 if report.blocked else 0
     except Exception:
         store.finish_run(run_id, "error")
@@ -276,7 +397,15 @@ def cmd_suite(args: argparse.Namespace) -> int:
 
     summary = _case_summary(run_id)
     flaky = _flaky_cases()
-    report = gate.evaluate_suite(summary["passed"], summary["failed"], summary["errors"], flaky, rules)
+    # 退出码必须进判定。passed/failed/errors 是从 cases 表里数出来的，
+    # 而写表的是 pytest 插件：插件没生效、`-p` 参数写错、收集阶段就崩了，
+    # 表里都会是 0，光看表会安静地放行（历史上正是如此 —— 一个用例都没跑，
+    # 却能打印「通过率 100.00%（0/0）」）。
+    # pytest 退出码：0 全过、1 有用例失败、2 中断、3 内部错误、
+    # 4 用法错误、5 没收集到任何用例。后四种都不代表代码有问题，
+    # 但都代表「本轮结论无效」，不能放行。
+    report = gate.evaluate_suite(summary["passed"], summary["failed"], summary["errors"],
+                                 flaky, rules, exit_code=proc.returncode)
     store.add_gate_results(run_id, [r.as_dict() for r in report.results])
     status = "failed" if report.blocked else "passed"
     store.finish_run(run_id, status, summary)
@@ -284,7 +413,44 @@ def cmd_suite(args: argparse.Namespace) -> int:
           f" / 跳过 {summary['skipped']}")
     print(f"[suite] flaky 用例 {len(flaky)} 条")
     print(report.render())
+    emit(args, {
+        "run_id": run_id,
+        "kind": "suite",
+        "label": args.label,
+        "status": status,
+        "blocked": report.blocked,
+        "target": args.target,
+        "pytest_exit_code": proc.returncode,
+        "summary": summary,
+        "flaky": flaky,
+        "rules": [r.as_dict() for r in report.results],
+    })
+    # 退出码由 S3-pytest-exit 参与判定，所以这里不必再单独看 proc.returncode：
+    # 退出码不是 0/1、或"pytest 说失败了却一条都没记进表"时，S3 是 blocking 的，
+    # report.blocked 已经为真。
     return 1 if report.blocked else 0
+
+
+def _fetch_report_rows(base_url: str, timeout_s: float) -> list[dict] | None:
+    """取一次探针接口的响应体，用于数据一致性校验。
+
+    取不到（网络抖动/服务已停）时返回 None 而不是抛异常：
+    探针的**主要**产物是耗时，不该因为一次取数失败就整轮作废。
+    但返回 None **不等于**"两种实现的数据一致"——`evaluate_probe_data`
+    收到 None 时会产出一条 `skipped=True` 的 P0 结果，在报告里标成
+    `[SKIP]` 明说"本轮没校验"（既不静默消失，也不把 CI 判红）。
+    """
+    import requests
+
+    try:
+        resp = requests.get(f"{base_url}/api/reports/slow-by-supplier",
+                            params={"window_days": 30}, timeout=timeout_s)
+        resp.raise_for_status()
+        return resp.json().get("rows", [])
+    except Exception as exc:  # noqa: BLE001 - 取数失败不该让整轮探针崩掉
+        print(f"[probe] ⚠ 数据一致性校验取数失败（{exc}）；本轮 P0 会以 [SKIP] 出现在报告里",
+              file=sys.stderr)
+        return None
 
 
 def _case_summary(run_id: str) -> dict:
@@ -302,7 +468,9 @@ def _case_summary(run_id: str) -> dict:
         "errors": errors,
         "skipped": counts.get("skipped", 0),
         "total": total,
-        "pass_rate": round(passed / total, 4) if total else 1.0,
+        # 0 个用例时既不是 100% 也不是 0%，而是「无法判定」——
+        # 从前这里回落到 1.0，等于把"一个用例都没跑到"写成满分。
+        "pass_rate": round(passed / total, 4) if total else None,
     }
 
 
@@ -326,6 +494,9 @@ def cmd_flaky(args: argparse.Namespace) -> int:
         print("没有达到 flaky 判定的用例。")
         print(f"（判据：执行 ≥ {analysis.FLAKY_MIN_RUNS} 次、结果在通过/失败之间摇摆、"
               f"稳定度 < {analysis.FLAKY_STABILITY_MAX:.0%}）")
+        emit(args, {"flaky": [], "budget": budget, "over_budget": False,
+                    "min_runs": analysis.FLAKY_MIN_RUNS,
+                    "stability_max": analysis.FLAKY_STABILITY_MAX})
         return 0
     print(f"{'用例':<58}{'执行':>5}{'通过':>6}{'失败':>6}{'稳定度':>9}  说明")
     for v in sorted(flaky, key=lambda x: x["stability"]):
@@ -335,6 +506,13 @@ def cmd_flaky(args: argparse.Namespace) -> int:
     print(f"\n共 {len(flaky)} 条 flaky" + (f"（预算 {budget} 条）" if budget is not None else ""))
     if over:
         print("超过 flaky 预算。flaky 用例会训练团队忽略红灯：要么修好，要么删掉。")
+    emit(args, {
+        "flaky": sorted(flaky, key=lambda x: x["stability"]),
+        "budget": budget,
+        "over_budget": over,
+        "min_runs": analysis.FLAKY_MIN_RUNS,
+        "stability_max": analysis.FLAKY_STABILITY_MAX,
+    })
     return 1 if over else 0
 
 def cmd_gate(args: argparse.Namespace) -> int:
@@ -348,11 +526,20 @@ def cmd_gate(args: argparse.Namespace) -> int:
     merged = _merge_from_rows(step_dicts)
     label = _label_of(args.run_id)
     baseline = store.get_baseline("perf", label) if label else None
-    deltas = analysis.compare_to_baseline(merged, baseline["metrics"]) if baseline else []
+    deltas = analysis.compare_to_baseline(merged, baseline["metrics"], rules) if baseline else []
     report = gate.evaluate_perf(merged, baseline, deltas, rules)
     store.add_gate_results(args.run_id, [r.as_dict() for r in report.results])
     print(f"run_id={args.run_id} label={label}")
     print(report.render())
+    emit(args, {
+        "run_id": args.run_id,
+        "label": label,
+        "blocked": report.blocked,
+        "metrics": merged,
+        "baseline_run_id": baseline["run_id"] if baseline else None,
+        "deltas": _delta_dicts(deltas),
+        "rules": [r.as_dict() for r in report.results],
+    })
     return 1 if report.blocked else 0
 
 
@@ -387,10 +574,13 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         store.set_baseline("perf", args.label, run_id, metrics)
         print(f"[baseline] kind=perf label={args.label} run_id={run_id}")
         print(f"           p95={metrics['p95_ms']}ms p99={metrics['p99_ms']}ms rps={metrics['rps']}")
+        emit(args, {"action": "set", "kind": "perf", "label": args.label,
+                    "run_id": run_id, "metrics": metrics})
         return 0
     if args.action == "show":
         b = store.get_baseline("perf", args.label)
         print(json.dumps(b, ensure_ascii=False, indent=2) if b else f"没有 label={args.label} 的基线")
+        emit(args, {"action": "show", "kind": "perf", "label": args.label, "baseline": b})
         return 0
     if args.action == "clear":
         from metrics.store import tx
@@ -398,6 +588,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         with tx() as conn:
             conn.execute("DELETE FROM baselines WHERE kind='perf' AND label=?", (args.label,))
         print(f"[baseline] 已清除 label={args.label}")
+        emit(args, {"action": "clear", "kind": "perf", "label": args.label, "cleared": True})
         return 0
     return 2
 
@@ -436,16 +627,31 @@ def cmd_trend(args: argparse.Namespace) -> int:
     print(f"label={args.label} 最近 {len(rows)} 轮：")
     print(f"{'时间':<22}{'状态':<9}{'P95(ms)':>10}{'P99(ms)':>10}{'RPS':>10}{'错误率':>10}")
     series_p95: list[float] = []
+    points: list[dict] = []
     for r in rows:
         m = json.loads(r["metrics_json"] or "{}")
         if not m:
             continue
         series_p95.append(float(m.get("p95_ms", 0)))
+        points.append({
+            "run_id": r["run_id"], "kind": r["kind"], "status": r["status"],
+            "started_at": r["started_at"],
+            "p95_ms": m.get("p95_ms"), "p99_ms": m.get("p99_ms"),
+            "rps": m.get("rps"), "error_rate": m.get("error_rate"),
+        })
         print(
             f"{r['started_at'][:19]:<22}{r['status']:<9}{m.get('p95_ms', 0):>10.2f}"
             f"{m.get('p99_ms', 0):>10.2f}{m.get('rps', 0):>10.2f}{m.get('error_rate', 0):>10.2%}"
         )
-    print(f"\nP95 方向：{analysis.moving_direction(series_p95)}")
+    direction = analysis.moving_direction(series_p95)
+    print(f"\nP95 方向：{direction}")
+    emit(args, {
+        "label": args.label,
+        "points": points,
+        "series_p95": series_p95,
+        "p95_direction": direction,
+        "tolerance_pct": analysis.DEGRADATION_TOLERANCE,
+    })
     return 0
 
 
@@ -515,10 +721,198 @@ def cmd_noise(args: argparse.Namespace) -> int:
         print(f"[noise] ⚠ 波动 {spread_pct:.1f}% 偏大：这台机器不适合做精细的性能门禁，"
               f"先排查是否有其他进程在抢 CPU。")
     suggested = max(5.0, round(worst * 2 / 5) * 5)
-    print(f"[noise] 建议 baseline.degradation_tolerance_pct ≥ {suggested:.0f}"
+    # 文案指向**真实存在**的键。
+    #
+    # 这里原先打印 `baseline.degradation_tolerance_pct` —— 一个
+    # gate_rules.yaml 里根本没有的键（它全部 8 个键里没有这个）。
+    # 用户照着提示去改，会找不到东西；而同一份 YAML 的头注释
+    # 又写着「阈值集中在这一处，改标准改这里」。两句互相矛盾。
+    print(f"[noise] 建议把 gate_rules.yaml 的 perf.tolerance.degradation_pct "
+          f"设为 ≥ {suggested / 100:.2f}"
           f"（约为实测最大偏离 {worst:.1f}% 的 2 倍，留出余量）")
-    print(f"[noise] 当前 gate_rules.yaml 的值请对照 docs/度量口径.md 自行调整；"
-          f"本命令**不自动改配置**。")
+    print(f"[noise] 同时考虑 perf.tolerance.rps_degradation_pct（RPS 方向相反）。")
+    print(f"[noise] 本命令**不自动改配置** —— 阈值必须由人定，"
+          f"否则门禁会自己给自己发免死金牌。")
+    return 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    """清理 quality.db 里的历史运行并回收空间（默认保留每个 label 最近 200 轮）。
+
+    ## 为什么这个命令必须存在
+
+    平台的设计是「每次运行都入库 + 每次运行都出报告」（见本模块 docstring）。
+    这是对的：只存成功记录的度量平台，通过率是假的。代价是 `quality.db`
+    在 CI 上无限长大 —— 每个 job 都 insert，没有任何东西删。
+
+    ## 删除时必须绕开的三处陷阱
+
+    1. **`baselines` 没有外键**。它按 `(kind, label)` 存一行、用 `run_id`
+       指向基线那次运行。如果那次运行被删掉，基线不会消失，只会变成
+       悬空的 `run_id` —— 而门禁的 `R3-baseline-degradation` 恰恰是拿
+       基线里的 `metrics_json` 做比较（不是拿 run 做 join），
+       所以**悬空基线还是能用的**，但 `platform_cli baseline show` 会指向
+       一个查不到的 run。这里的选择是：**保留被基线引用的 run**，
+       因为基线是「故意留着的老数据」，它比任何统计都重要。
+
+    2. **`gate_results` 没有外键、没有 CASCADE**。`steps`/`cases` 靠
+       `REFERENCES runs(run_id) ON DELETE CASCADE` 自动清（`connect()`
+       里 `PRAGMA foreign_keys=ON` 是生效的前提），但 `gate_results` 会
+       留下来变成孤儿行。必须手工删。
+
+    3. **正在跑的运行不能删**。`status='running'` 说明有另一个进程
+       正在往里写，删掉它会让那个进程写进一个不存在的 run。
+
+    ## VACUUM 的两个约束
+
+    - **不能在事务里执行**（SQLite 直接报错），所以要单独开连接；
+    - 删完之后不 VACUUM，文件大小不会变 —— 空间回收一半的清理等于没清理。
+      但 VACUUM 会重写整个文件、需要额外磁盘空间，且会锁库，
+      所以在 CI 上应当能关掉（`--no-vacuum`）。
+    """
+    store.init_db()
+    keep_runs = max(0, args.keep_runs)
+    keep_days = args.keep_days
+    now = datetime.now(timezone.utc)
+
+    with store.tx() as conn:
+        # 被基线引用的 run：永久保留（见 docstring 第 1 点）。
+        protected = {
+            row["run_id"]
+            for row in conn.execute("SELECT run_id FROM baselines")
+        }
+        # 正在跑的 run 也要保留（第 3 点）。
+        protected |= {
+            row["run_id"]
+            for row in conn.execute("SELECT run_id FROM runs WHERE status='running'")
+        }
+
+        groups = conn.execute(
+            "SELECT DISTINCT kind, label FROM runs ORDER BY kind, label"
+        ).fetchall()
+
+        doomed: list[str] = []
+        plan: list[dict] = []
+        for g in groups:
+            kind, label = g["kind"], g["label"]
+            # 新的在前：保留策略永远按"最近的"算。
+            rows = conn.execute(
+                "SELECT run_id, started_at, status FROM runs "
+                "WHERE kind=? AND label=? ORDER BY started_at DESC",
+                (kind, label),
+            ).fetchall()
+
+            keep: set[str] = set()
+            for i, row in enumerate(rows):
+                if i < keep_runs:
+                    keep.add(row["run_id"])
+                    continue
+                if keep_days is not None:
+                    # started_at 是 now_iso() 写的（带时区的 ISO 串）,
+                    # 直接解析比较，别用字符串前缀比 —— 时区后缀会让它错。
+                    try:
+                        started = datetime.fromisoformat(row["started_at"])
+                    except ValueError:
+                        keep.add(row["run_id"])  # 解析不了就不敢删
+                        continue
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    if (now - started).total_seconds() <= keep_days * 86400:
+                        keep.add(row["run_id"])
+
+            dropped = [r["run_id"] for r in rows if r["run_id"] not in keep]
+            kept_protected = [rid for rid in dropped if rid in protected]
+            dropped = [rid for rid in dropped if rid not in protected]
+            if dropped or kept_protected:
+                plan.append({
+                    "kind": kind,
+                    "label": label,
+                    "total": len(rows),
+                    "keep": len(rows) - len(dropped),
+                    "delete": len(dropped),
+                    "kept_by_baseline": len(kept_protected),
+                })
+            doomed.extend(dropped)
+
+        # 先数一遍连带影响的行数，好让 --dry-run 报告也说得清楚。
+        def count_for(table: str, ids: list[str]) -> int:
+            if not ids:
+                return 0
+            q = ",".join("?" * len(ids))
+            return conn.execute(
+                f"SELECT COUNT(*) c FROM {table} WHERE run_id IN ({q})", ids
+            ).fetchone()["c"]
+
+        steps_n = count_for("steps", doomed)
+        cases_n = count_for("cases", doomed)
+        gate_n = count_for("gate_results", doomed)
+
+        deleted = {"runs": 0, "steps": 0, "cases": 0, "gate_results": 0}
+        if doomed and not args.dry_run:
+            q = ",".join("?" * len(doomed))
+            # gate_results 没有外键，必须手工删（第 2 点）。
+            deleted["gate_results"] = conn.execute(
+                f"DELETE FROM gate_results WHERE run_id IN ({q})", doomed
+            ).rowcount
+            # steps / cases 由 ON DELETE CASCADE 带走。
+            deleted["runs"] = conn.execute(
+                f"DELETE FROM runs WHERE run_id IN ({q})", doomed
+            ).rowcount
+            deleted["steps"] = steps_n
+            deleted["cases"] = cases_n
+
+    vacuumed = False
+    if not args.dry_run and not args.no_vacuum and deleted["runs"]:
+        # VACUUM 不能在事务里跑，所以这里直接拿 store.connect()，
+        # 并把 isolation_level 设为 None（自动提交），避免 sqlite3 隐式开事务。
+        conn = store.connect()
+        try:
+            conn.isolation_level = None
+            conn.execute("VACUUM")
+            vacuumed = True
+        finally:
+            conn.close()
+
+    payload = {
+        "db": str(store.db_path()),
+        "dry_run": bool(args.dry_run),
+        "keep_runs": keep_runs,
+        "keep_days": keep_days,
+        "groups": plan,
+        "delete": {
+            "runs": len(doomed) if args.dry_run else deleted["runs"],
+            "steps": steps_n if args.dry_run else deleted["steps"],
+            "cases": cases_n if args.dry_run else deleted["cases"],
+            "gate_results": gate_n if args.dry_run else deleted["gate_results"],
+        },
+        "vacuumed": vacuumed,
+        "protected_by_baseline": sorted(protected),
+    }
+
+    verb = "将要删除" if args.dry_run else "已删除"
+    print(f"[prune] {store.db_path()}")
+    print(f"[prune] 保留策略：每个 label 最近 {keep_runs} 轮"
+          + (f"，或最近 {keep_days} 天内" if keep_days is not None else ""))
+    if not plan:
+        print(f"[prune] 没有需要清理的运行")
+    for g in plan:
+        print(f"[prune]   {g['kind']}/{g['label']}: 共 {g['total']} 轮，"
+              f"{verb} {g['delete']} 轮，保留 {g['keep']} 轮"
+              + (f"（其中 {g['kept_by_baseline']} 轮因被基线引用而强制保留）"
+                 if g["kept_by_baseline"] else ""))
+    d = payload["delete"]
+    print(f"[prune] 合计：runs {d['runs']} / steps {d['steps']} / cases {d['cases']} "
+          f"/ gate_results {d['gate_results']}")
+    if args.dry_run:
+        print("[prune] --dry-run：没有真的删除任何东西。")
+    elif vacuumed:
+        print("[prune] 已执行 VACUUM 回收空间。")
+    elif not args.no_vacuum:
+        print("[prune] 没有删除任何行，跳过 VACUUM。")
+    else:
+        print("[prune] --no-vacuum：已跳过 VACUUM（文件大小不会变小）。")
+
+    emit(args, payload)
     return 0
 
 
@@ -549,6 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--timeout", type=float, default=10.0)
     r.add_argument("--warmup-drop", type=float, default=1.5, help="丢弃前 N 秒热身样本")
     r.add_argument("--set-baseline", action="store_true", help="把本轮显式设为基线")
+    add_json_flags(r)
     r.set_defaults(func=cmd_run)
 
     pr = sub.add_parser("probe", help="性能探针：agg vs n1")
@@ -558,31 +953,37 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--duration", type=float, default=8.0)
     pr.add_argument("--timeout", type=float, default=30.0)
     pr.add_argument("--warmup-drop", type=float, default=1.0)
+    add_json_flags(pr)
     pr.set_defaults(func=cmd_probe)
 
     b = sub.add_parser("baseline", help="基线管理")
     b.add_argument("action", choices=["set", "show", "clear"])
     b.add_argument("--label", required=True)
     b.add_argument("--run-id", default=None)
+    add_json_flags(b)
     b.set_defaults(func=cmd_baseline)
 
     t = sub.add_parser("trend", help="趋势")
     t.add_argument("--label", required=True)
     t.add_argument("--limit", type=int, default=10)
+    add_json_flags(t)
     t.set_defaults(func=cmd_trend)
 
     g = sub.add_parser("gate", help="对已入库的 run 重新判定门禁")
     g.add_argument("--run-id", required=True)
+    add_json_flags(g)
     g.set_defaults(func=cmd_gate)
 
     su = sub.add_parser("suite", help="跑功能用例并入库、判定套件门禁")
     su.add_argument("--label", default="platform-tests")
     su.add_argument("--target", default="tests", help="pytest 目标路径")
     su.add_argument("extra", nargs="*", help="透传给 pytest 的额外参数")
+    add_json_flags(su)
     su.set_defaults(func=cmd_suite)
 
     fl = sub.add_parser("flaky", help="列出 flaky 用例")
     fl.add_argument("--budget", type=int, default=None)
+    add_json_flags(fl)
     fl.set_defaults(func=cmd_flaky)
 
     ns = sub.add_parser("noise", help="量出本机的运行间波动，用来定容忍带")
@@ -593,7 +994,16 @@ def build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--step-duration", type=float, default=6.0)
     ns.add_argument("--warmup-drop", type=float, default=1.5)
     ns.add_argument("--timeout", type=float, default=10.0)
+    add_json_flags(ns)
     ns.set_defaults(func=cmd_noise)
+
+    pn = sub.add_parser("prune", help="清理 quality.db 的历史数据并回收空间")
+    pn.add_argument("--keep-runs", type=int, default=200, help="每个 label 保留最近多少轮")
+    pn.add_argument("--keep-days", type=float, default=None, help="只保留最近 N 天的运行")
+    pn.add_argument("--dry-run", action="store_true", help="只报告将要删除什么")
+    pn.add_argument("--no-vacuum", action="store_true", help="不执行 VACUUM")
+    add_json_flags(pn)
+    pn.set_defaults(func=cmd_prune)
 
     s = sub.add_parser("serve", help="起看板")
     s.add_argument("--host", default="127.0.0.1")
@@ -602,7 +1012,31 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _make_stdout_utf8() -> None:
+    """让 stdout/stderr 能吃下门禁结论里的 ❌ / ✅ / ⚠。
+
+    这两件事凑在一起就必炸：门禁结论用 emoji 表达（`gate.GateReport.render()`），
+    而 Windows 控制台默认是 GBK 代码页 —— 于是**只要门禁真的拦住一次**，
+    `print(report.render())` 就抛 UnicodeEncodeError，退出码变成 1 但原因
+    是"打印失败"而不是"门禁拦住"，报告文件写不进去，CI 日志里也看不到判定。
+    偏偏只有拦住的那条路径会崩：全绿时渲染出的字符串里没有这些字符，
+    所以这个坑在本地一直看不见，直到第一次真正需要门禁拦住构建。
+
+    用 errors="replace" 兜底：即使遇到再离谱的字符，也只退化成一个问号，
+    不能让"打印结论"这件事决定门禁是否可用。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_stdout_utf8()
     args = build_parser().parse_args(argv)
     return args.func(args)
 
