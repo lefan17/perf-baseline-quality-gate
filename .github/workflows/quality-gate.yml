@@ -133,7 +133,7 @@ jobs:
 
       - name: 上传扫描报告
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pip-audit-report
           path: audit-report.md
@@ -196,7 +196,7 @@ jobs:
 
       - name: 上传覆盖率报告
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml
@@ -205,7 +205,7 @@ jobs:
 
       - name: 上传结果库与报告
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quality-db-and-reports
           path: |
@@ -278,7 +278,7 @@ jobs:
 
       - name: 上传本轮报告
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-report
           path: reports/
