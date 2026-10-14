@@ -18,6 +18,11 @@
 version: 2
 
 updates:
+# ⚠️ labels 里的每个名字必须**先存在于仓库中**。
+#    Dependabot 不会替你创建标签：缺标签时它会在每个 PR 下留一条
+#    "The following labels could not be found" 评论，并随之发一封邮件。
+#    2026-10-13 本仓库因此产生 4 条完全相同的评论（每个 PR 一条）。
+#    改 labels 之前先跑 `gh label list --repo <owner>/<repo>` 核对。
   # ---- Python 依赖 ----
   - package-ecosystem: pip
     directory: "/"
