@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # 开发/工程化工具链（**不进运行时镜像**，见 Dockerfile 只装 requirements.txt）。
 #
 # 与 requirements.txt 同样的纪律：能钉死的全部 ==。

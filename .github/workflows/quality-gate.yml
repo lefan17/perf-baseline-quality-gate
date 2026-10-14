@@ -90,8 +90,12 @@ jobs:
   # 把它做成阻塞项，唯一的长期结果是"有人加 `|| true`"，门禁照样失效，
   # 只是没人再看得见。所以：**结论留在 step summary 里，由人决定要不要处理**。
   #
-  # 本仓库的开发沙箱装不上 pip-audit（拒绝 ensurepip，报
-  # PermissionError: [WinError 5]），所以这一步**只在 CI 可验证**。
+  # `pip-audit -r <file>` 在本机沙箱跑不了：它会建临时 venv 并调 ensurepip，
+  # 而沙箱拒绝（PermissionError: [WinError 5]），所以这一步**只在 CI 可验证**。
+  # 但 `pip-audit --local` 不需要建 venv，本机可跑（实测 21 个已知漏洞 / 7 个包）。
+  # 另已修一个独立缺陷：`-r` 读含中文注释的 requirements*.txt 时，
+  # 内嵌的 pip_requirements_parser 会回退到 cp936 抛 UnicodeDecodeError；
+  # 已通过给 requirements.txt / requirements-dev.txt 补 PEP263 声明修复。
   # ------------------------------------------------------------------------- #
   security-audit:
     name: 依赖漏洞扫描（pip-audit，非阻塞）
