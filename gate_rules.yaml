@@ -42,6 +42,13 @@ perf:
     degradation_pct: 0.10      # 延迟类（P95/P99/mean/max）涨幅超过它算劣化
     rps_degradation_pct: 0.10  # RPS 方向相反：掉超过它算劣化
 
+  # 可比性：两轮的配置差多少就认为"不是同一套实验"。
+  # items 从 5000 变成 5100 是同一个实验，从 5254 变成 900 是另一个实验。
+  # report_mode / scenario 一律要求**精确相等**，不走这个容忍带。
+  # 5% 不是统计推导出来的，是一条工程线；改动前先读 docs/度量口径.md。
+  comparability:
+    tolerance: 0.05
+
 probe:
   # 性能探针：故意保留的 N+1 实现。
   # 阈值取自实测 —— 记录在 docs/已知问题.md 的 P-1，口径论证在 docs/度量口径.md。
@@ -59,3 +66,8 @@ probe:
 suite:
   min_pass_rate: 1.0          # 功能用例必须全绿
   max_flaky_cases: 2          # flaky 预算：超过就要处理，但不拦流水线
+  # flaky 判据：判定用"稳定度"（多数派占比）而不是"失败次数"——
+  # 一个跑 200 次失败 3 次的用例比跑 8 次失败 3 次的用例健康得多。
+  # 样本不足 min_runs 时不下结论（跳过而非判 flaky）。
+  flaky_min_runs: 6
+  flaky_stability_max: 0.85

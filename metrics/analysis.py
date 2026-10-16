@@ -8,17 +8,23 @@
 
 ## 容忍带从哪来
 
-`DEGRADATION_TOLERANCE` / `RPS_DEGRADATION_TOLERANCE` 是**默认值**，
-真正的值可以由 `gate_rules.yaml` 的 `perf.tolerance` 覆盖 —— 见
-`tolerance_from_rules()`。之所以两个地方都留，是因为：
+`DEGRADATION_TOLERANCE` / `RPS_DEGRADATION_TOLERANCE` / `COMPARABILITY_TOLERANCE` /
+`FLAKY_MIN_RUNS` / `FLAKY_STABILITY_MAX` 都是**默认值**，真正的值由
+`gate_rules.yaml` 覆盖 —— 见 `tolerance_from_rules()`、
+`comparability_tolerance_from_rules()`、`flaky_thresholds_from_rules()`。
+之所以两个地方都留，是因为：
 
 * `gate_rules.yaml` 的头注释承诺"阈值集中在这一处，改标准改这里"，
-  而容忍带是**最需要常改**的那个数（换机器就要重量）；
+  而这些数正是**最需要常改**的那几个（换机器就要重量）；
 * 但纯逻辑用例（`tests/test_platform.py`）不应该为了测一个比较函数
   去读文件系统，所以模块常量必须能独立成立。
 
 约定：**运行时以 YAML 为准，模块常量只是它的后备**。两者不一致时
 （YAML 改了、常量没改），以 YAML 为准，这正是"集中在一处"的含义。
+
+例外：`KNEE_RPS_PER_USER_DROP` / `KNEE_ERROR_RATE` 仍是纯模块常量。
+拐点判定（`find_knee`）的口径被 `tests/test_platform.py` 的断言逐字节钉住，
+把它改成读配置属于另一件事，不在本次范围内。
 """
 
 from __future__ import annotations
@@ -58,8 +64,8 @@ RPS_DEGRADATION_TOLERANCE = 0.10
 _EPS = 1e-9
 KNEE_RPS_PER_USER_DROP = 0.20  # 每用户吞吐相对峰值掉 20% 即认为过拐点
 KNEE_ERROR_RATE = 0.01         # 错误率超过 1% 也算拐点
-FLAKY_MIN_RUNS = 6             # 少于 6 次执行不给 flaky 结论（样本太小）
-FLAKY_STABILITY_MAX = 0.85     # 稳定度（多数派占比）低于 85% 判 flaky
+FLAKY_MIN_RUNS = 6             # 少于 6 次执行不给 flaky 结论（样本太小）；YAML 可覆盖
+FLAKY_STABILITY_MAX = 0.85     # 稳定度（多数派占比）低于 85% 判 flaky；YAML 可覆盖
 
 
 # --------------------------------------------------------------------------- #
@@ -146,6 +152,31 @@ def tolerance_from_rules(rules: dict | None) -> tuple[float, float]:
 COMPARABILITY_TOLERANCE = 0.05
 
 
+def comparability_tolerance_from_rules(rules: dict | None) -> float:
+    """从 `gate_rules.yaml` 读出可比性容忍带。
+
+    缺项时回落到模块常量 —— 与 `tolerance_from_rules` 同一套规矩：
+    YAML 是唯一的**配置**，模块常量是"没给配置时"的默认。
+    """
+    section = ((rules or {}).get("perf") or {}).get("comparability") or {}
+    value = section.get("tolerance")
+    return COMPARABILITY_TOLERANCE if value is None else float(value)
+
+
+def flaky_thresholds_from_rules(rules: dict | None) -> tuple[int, float]:
+    """从 `gate_rules.yaml` 读出 flaky 判据，返回 `(最少执行次数, 稳定度上限)`。
+
+    缺项时回落到模块常量，理由同上。
+    """
+    section = (rules or {}).get("suite") or {}
+    min_runs = section.get("flaky_min_runs")
+    stability_max = section.get("flaky_stability_max")
+    return (
+        FLAKY_MIN_RUNS if min_runs is None else int(min_runs),
+        FLAKY_STABILITY_MAX if stability_max is None else float(stability_max),
+    )
+
+
 @dataclass
 class Comparability:
     """两轮（本轮 vs 基线）配置的可比性判定。
@@ -170,7 +201,9 @@ def _rel_diff(a: float, b: float) -> float:
     return 0.0 if base == 0 else abs(a - b) / base
 
 
-def check_comparability(current_config: dict | None, baseline_config: dict | None) -> Comparability:
+def check_comparability(
+    current_config: dict | None, baseline_config: dict | None, rules: dict | None = None
+) -> Comparability:
     """判断本轮与基线是不是"同一套实验"。
 
     比的是**被测配置**，不是指标值：items（数据量）、并发梯度（step_users）、
@@ -180,6 +213,9 @@ def check_comparability(current_config: dict | None, baseline_config: dict | Non
 
     `current_config` 为 None 表示调用方没提供配置（老调用路径/单元测试构造的
     极小 baseline）：此时**不做校验**，返回 "ok"，由调用方保持原有行为。
+
+    `rules` 传入门禁规则时，容忍带以 `perf.comparability.tolerance` 为准；
+    不传（老调用路径）则用模块常量，数值与 YAML 里的默认值一致。
     """
     if current_config is None:
         return Comparability("ok", [])
@@ -188,6 +224,7 @@ def check_comparability(current_config: dict | None, baseline_config: dict | Non
     if not baseline_config:
         return Comparability("unknown", ["基线建立时未记录 items / 并发等配置"])
 
+    tol = comparability_tolerance_from_rules(rules)
     reasons: list[str] = []
     verdict = "ok"
 
@@ -198,7 +235,7 @@ def check_comparability(current_config: dict | None, baseline_config: dict | Non
             reasons.append(f"{label} 从 `{b}` 变成 `{c}`")
 
     b_items, c_items = baseline_config.get("items"), current_config.get("items")
-    if b_items is not None and c_items is not None and _rel_diff(float(b_items), float(c_items)) > COMPARABILITY_TOLERANCE:
+    if b_items is not None and c_items is not None and _rel_diff(float(b_items), float(c_items)) > tol:
         verdict = "incomparable"
         reasons.append(f"数据量 items 从 {b_items} 变成 {c_items}")
 
@@ -206,7 +243,7 @@ def check_comparability(current_config: dict | None, baseline_config: dict | Non
     c_users = current_config.get("step_users") or []
     if b_users and c_users:
         b_max, c_max = max(b_users), max(c_users)
-        if _rel_diff(float(b_max), float(c_max)) > COMPARABILITY_TOLERANCE:
+        if _rel_diff(float(b_max), float(c_max)) > tol:
             verdict = "incomparable"
             reasons.append(f"最高并发从 {b_max} 变成 {c_max}")
         elif list(b_users) != list(c_users):
@@ -357,20 +394,24 @@ class FlakyVerdict:
         )
 
 
-def analyze_flaky(history: list[dict], nodeid: str = "") -> FlakyVerdict:
+def analyze_flaky(history: list[dict], nodeid: str = "", rules: dict | None = None) -> FlakyVerdict:
     """一条用例的历史执行 → flaky 判定。
 
     判定用"稳定度"（多数派占比）而不是"失败次数"：
     一个跑 200 次失败 3 次的用例比跑 8 次失败 3 次的用例健康得多，
     只看失败次数会把前者一起判成 flaky，把噪声当信号。
+
+    `rules` 传入门禁规则时，判据以 `suite.flaky_min_runs` /
+    `suite.flaky_stability_max` 为准；不传则用模块常量（数值与 YAML 默认一致）。
     """
+    min_runs, stability_max = flaky_thresholds_from_rules(rules)
     runs = len(history)
     passed = sum(1 for h in history if h["outcome"] == "passed")
     failed = sum(1 for h in history if h["outcome"] in ("failed", "error"))
     skipped = runs - passed - failed
     durations = [h["duration_s"] for h in history if h.get("duration_s")]
 
-    if runs < FLAKY_MIN_RUNS:
+    if runs < min_runs:
         return FlakyVerdict(
             nodeid=nodeid,
             runs=runs,
@@ -379,17 +420,17 @@ def analyze_flaky(history: list[dict], nodeid: str = "") -> FlakyVerdict:
             stability=round(passed / runs, 4) if runs else 0.0,
             flaky=False,
             median_duration_s=round(median(durations), 3) if durations else 0.0,
-            note=f"样本不足（{runs} < {FLAKY_MIN_RUNS}），不下结论",
+            note=f"样本不足（{runs} < {min_runs}），不下结论",
         )
 
     stability = max(passed, failed) / runs
     has_both = passed > 0 and failed > 0
-    flaky = has_both and stability < FLAKY_STABILITY_MAX
+    flaky = has_both and stability < stability_max
     note = ""
     if not has_both:
         note = "只有单一结果，稳定"
     elif flaky:
-        note = f"结果在通过/失败之间摇摆（稳定度 {stability:.0%} < {FLAKY_STABILITY_MAX:.0%}）"
+        note = f"结果在通过/失败之间摇摆（稳定度 {stability:.0%} < {stability_max:.0%}）"
     else:
         note = f"偶发失败但多数派稳定（{stability:.0%}）"
     if skipped:
@@ -515,8 +556,12 @@ def trend_series(rows: list[dict], metric: str) -> list[tuple[str, float]]:
     return out
 
 
-def moving_direction(series: list[float], window: int = 3) -> str:
-    """最近 window 个点相对更早的点是升还是降 —— 看板上一眼能看懂的方向标。"""
+def moving_direction(series: list[float], window: int = 3, rules: dict | None = None) -> str:
+    """最近 window 个点相对更早的点是升还是降 —— 看板上一眼能看懂的方向标。
+
+    "升/降"的边界就是容忍带本身，所以它必须和门禁读同一个数：
+    否则 YAML 把容忍带调成 5% 之后，看板还在按 10% 说"持平"。
+    """
     if len(series) < window + 1:
         return "样本不足"
     recent = sum(series[-window:]) / window
@@ -524,9 +569,10 @@ def moving_direction(series: list[float], window: int = 3) -> str:
     if earlier == 0:
         return "持平"
     delta = (recent - earlier) / earlier
-    if delta > DEGRADATION_TOLERANCE:
+    tol = tolerance_from_rules(rules)[0]
+    if delta > tol:
         return f"上升 {delta:+.1%}"
-    if delta < -DEGRADATION_TOLERANCE:
+    if delta < -tol:
         return f"下降 {delta:+.1%}"
     return "持平"
 
@@ -536,7 +582,8 @@ def moving_direction(series: list[float], window: int = 3) -> str:
 # --------------------------------------------------------------------------- #
 def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[Delta],
                        knee: dict | None, platform_info: dict, config: dict,
-                       comparability: "Comparability | None" = None) -> str:
+                       comparability: "Comparability | None" = None,
+                       rules: dict | None = None) -> str:
     """生成一页纸的压测报告（Markdown）。
 
     这份文本是给人看的，也是给面试官看的：**它必须能自己解释自己**
@@ -545,6 +592,8 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
     `comparability` 传入且判定非 "ok" 时，「与基线对比」整段换成"无法判定可比性"：
     照样把差异列出来供参考，但**不写劣化判定** —— 一段没有判定的话，
     比一段看起来像判定的错话安全。
+
+    `rules` 传入时，结论里写的容忍带数字与实际判定用的是同一个来源。
     """
     lines: list[str] = []
     lines.append(f"# 压测报告 · {label}")
@@ -640,5 +689,5 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
     lines.append("- SQLite(WAL) 是单文件数据库，写路径的并发能力远低于真实 MySQL/PostgreSQL。"
                  "**写场景的绝对数字不可外推**。")
     lines.append("- 本机有杀毒/索引等后台负载，短时压测的 P99 抖动大，"
-                 f"因此口径里设了 {DEGRADATION_TOLERANCE:.0%} 的噪声容忍带。")
+                 f"因此口径里设了 {tolerance_from_rules(rules)[0]:.0%} 的噪声容忍带。")
     return "\n".join(lines)

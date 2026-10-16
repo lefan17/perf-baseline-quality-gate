@@ -282,7 +282,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         # 基线可比性：口径不同（数据量/并发/场景/报表实现）时，劣化百分比没有意义。
         comparability = (
-            analysis.check_comparability(config, baseline.get("config")) if baseline else None
+            analysis.check_comparability(config, baseline.get("config"), rules) if baseline else None
         )
 
         report = gate.evaluate_perf(run_metrics, baseline, deltas, rules, comparability)
@@ -291,7 +291,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         store.finish_run(run_id, status, {"knee": knee, **run_metrics})
 
         text = analysis.render_perf_report(run_id, label, step_dicts, deltas, knee, info, config,
-                                           comparability)
+                                           comparability, rules)
         text += "\n\n" + report.render() + "\n"
         REPORTS_DIR.mkdir(exist_ok=True)
         out_path = REPORTS_DIR / f"{run_id}.md"
@@ -486,7 +486,7 @@ def cmd_suite(args: argparse.Namespace) -> int:
     proc = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True, encoding="utf-8", errors="replace")
 
     summary = _case_summary(run_id)
-    flaky = _flaky_cases()
+    flaky = _flaky_cases(rules)
     # 退出码必须进判定。passed/failed/errors 是从 cases 表里数出来的，
     # 而写表的是 pytest 插件：插件没生效、`-p` 参数写错、收集阶段就崩了，
     # 表里都会是 0，光看表会安静地放行（历史上正是如此 —— 一个用例都没跑，
@@ -564,10 +564,10 @@ def _case_summary(run_id: str) -> dict:
     }
 
 
-def _flaky_cases() -> list[dict]:
+def _flaky_cases(rules: dict | None = None) -> list[dict]:
     out = []
     for nodeid in store.all_nodeids():
-        v = analysis.analyze_flaky(store.cases_for_node(nodeid), nodeid)
+        v = analysis.analyze_flaky(store.cases_for_node(nodeid), nodeid, rules)
         if v.flaky:
             out.append(v.__dict__)
     return out
@@ -579,14 +579,15 @@ def cmd_flaky(args: argparse.Namespace) -> int:
     budget = getattr(args, "budget", None)
     if budget is None:
         budget = rules.get("suite", {}).get("max_flaky_cases")
-    flaky = _flaky_cases()
+    min_runs, stability_max = analysis.flaky_thresholds_from_rules(rules)
+    flaky = _flaky_cases(rules)
     if not flaky:
         print("没有达到 flaky 判定的用例。")
-        print(f"（判据：执行 ≥ {analysis.FLAKY_MIN_RUNS} 次、结果在通过/失败之间摇摆、"
-              f"稳定度 < {analysis.FLAKY_STABILITY_MAX:.0%}）")
+        print(f"（判据：执行 ≥ {min_runs} 次、结果在通过/失败之间摇摆、"
+              f"稳定度 < {stability_max:.0%}）")
         emit(args, {"flaky": [], "budget": budget, "over_budget": False,
-                    "min_runs": analysis.FLAKY_MIN_RUNS,
-                    "stability_max": analysis.FLAKY_STABILITY_MAX})
+                    "min_runs": min_runs,
+                    "stability_max": stability_max})
         return 0
     print(f"{'用例':<58}{'执行':>5}{'通过':>6}{'失败':>6}{'稳定度':>9}  说明")
     for v in sorted(flaky, key=lambda x: x["stability"]):
@@ -600,8 +601,8 @@ def cmd_flaky(args: argparse.Namespace) -> int:
         "flaky": sorted(flaky, key=lambda x: x["stability"]),
         "budget": budget,
         "over_budget": over,
-        "min_runs": analysis.FLAKY_MIN_RUNS,
-        "stability_max": analysis.FLAKY_STABILITY_MAX,
+        "min_runs": min_runs,
+        "stability_max": stability_max,
     })
     return 1 if over else 0
 
@@ -620,7 +621,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     # 被门禁的那轮 run 自己的配置（不是当前命令行的配置）：这是唯一正确的比法，
     # 否则用「今天跑 gate 的环境」去比「当时那轮」的配置。
     comparability = (
-        analysis.check_comparability(_run_config(args.run_id), baseline.get("config"))
+        analysis.check_comparability(_run_config(args.run_id), baseline.get("config"), rules)
         if baseline else None
     )
     report = gate.evaluate_perf(merged, baseline, deltas, rules, comparability)
@@ -711,6 +712,9 @@ def _run_config(run_id: str) -> dict:
 
 def cmd_trend(args: argparse.Namespace) -> int:
     """趋势：把最近 N 轮的 P95/RPS 打出来，并给一个方向判断。"""
+    # 方向标的边界就是容忍带，必须和门禁读同一份规则；否则 YAML 改了容忍带，
+    # 趋势页还在按模块常量说"持平"。
+    rules = gate.load_rules(args.rules)
     # 不写死 kind='perf'：早先这里硬编码了 perf，于是 probe 类型的运行
     # 在趋势里永远查不到（跑了十几轮压测探针，趋势页却是空的）。
     # label 本身已经足够定位一组运行，kind 只当可选过滤。
@@ -748,14 +752,15 @@ def cmd_trend(args: argparse.Namespace) -> int:
             f"{r['started_at'][:19]:<22}{r['status']:<9}{m.get('p95_ms', 0):>10.2f}"
             f"{m.get('p99_ms', 0):>10.2f}{m.get('rps', 0):>10.2f}{m.get('error_rate', 0):>10.2%}"
         )
-    direction = analysis.moving_direction(series_p95)
+    direction = analysis.moving_direction(series_p95, rules=rules)
+    tol_pct = analysis.tolerance_from_rules(rules)[0]
     print(f"\nP95 方向：{direction}")
     emit(args, {
         "label": args.label,
         "points": points,
         "series_p95": series_p95,
         "p95_direction": direction,
-        "tolerance_pct": analysis.DEGRADATION_TOLERANCE,
+        "tolerance_pct": tol_pct,
     })
     return 0
 

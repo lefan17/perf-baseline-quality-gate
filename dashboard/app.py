@@ -31,6 +31,16 @@ app = FastAPI(title="Quality Dashboard", version="1.0.0")
 DEFAULT_RULES = ROOT / "gate_rules.yaml"
 
 
+def _load_rules(rules: str | None = None) -> dict:
+    """加载门禁规则：看板上的所有口径都必须来自同一个文件。
+
+    看板不是"另一套标准"：它显示的方向标、flaky 判据、劣化百分比
+    全部和 CLI 门禁读同一份 `gate_rules.yaml`，否则页面和流水线
+    会对同一个事实给出两种说法。
+    """
+    return gate.load_rules(rules or DEFAULT_RULES)
+
+
 # --------------------------------------------------------------------------- #
 # API
 # --------------------------------------------------------------------------- #
@@ -67,7 +77,8 @@ def api_run(run_id: str) -> JSONResponse:
 
 
 @app.get("/api/trend")
-def api_trend(label: str, limit: int = 20, kind: str | None = None) -> dict:
+def api_trend(label: str, limit: int = 20, kind: str | None = None,
+              rules: str | None = None) -> dict:
     """趋势序列：给看板画线，也给外部系统取数。
 
     `kind` 默认不过滤 —— 早先这里写死了 `kind="perf"`，导致
@@ -97,11 +108,17 @@ def api_trend(label: str, limit: int = 20, kind: str | None = None) -> dict:
         )
     # 基线的 kind 跟随实际取到的运行类型，而不是写死 perf
     baseline_kind = points[-1]["kind"] if points else (kind or "perf")
+    loaded_rules = _load_rules(rules)
     return {
         "label": label,
         "points": points,
-        "p95_direction": analysis.moving_direction([p["p95_ms"] for p in points if p["p95_ms"]]),
-        "rps_direction": analysis.moving_direction([p["rps"] for p in points if p["rps"]]),
+        "p95_direction": analysis.moving_direction(
+            [p["p95_ms"] for p in points if p["p95_ms"]], rules=loaded_rules
+        ),
+        "rps_direction": analysis.moving_direction(
+            [p["rps"] for p in points if p["rps"]], rules=loaded_rules
+        ),
+        "tolerance_pct": analysis.tolerance_from_rules(loaded_rules)[0],
         "baseline": store.get_baseline(baseline_kind, label),
     }
 
@@ -133,11 +150,12 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
     # `perf.tolerance.degradation_pct` 调成 5%，看板就会出现
     # 「deltas 说在容忍带内、门禁却判拦住」这种自相矛盾的结论。
     # 口径必须单点定义：加载一次，两处共用。
-    loaded_rules = gate.load_rules(rules or DEFAULT_RULES)
+    loaded_rules = _load_rules(rules)
     deltas = analysis.compare_to_baseline(merged, baseline["metrics"], loaded_rules) if baseline else []
     # 可比性也走单点：口径不同时不报劣化百分比，而是把 R3 标成 SKIP。
     comparability = (
-        analysis.check_comparability(run_config, baseline.get("config")) if baseline else None
+        analysis.check_comparability(run_config, baseline.get("config"), loaded_rules)
+        if baseline else None
     )
     report = gate.evaluate_perf(merged, baseline, deltas, loaded_rules, comparability)
     return {
@@ -152,10 +170,11 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
 
 
 @app.get("/api/cases/flaky")
-def api_flaky() -> list[dict]:
+def api_flaky(rules: str | None = None) -> list[dict]:
+    loaded_rules = _load_rules(rules)
     out = []
     for nodeid in store.all_nodeids():
-        verdict = analysis.analyze_flaky(store.cases_for_node(nodeid), nodeid)
+        verdict = analysis.analyze_flaky(store.cases_for_node(nodeid), nodeid, loaded_rules)
         if verdict.runs:
             out.append(verdict.__dict__)
     out.sort(key=lambda v: (not v["flaky"], v["stability"]))
@@ -166,14 +185,19 @@ def api_flaky() -> list[dict]:
 # 页面
 # --------------------------------------------------------------------------- #
 @app.get("/", response_class=HTMLResponse)
-def page() -> str:
+def page(rules: str | None = None) -> str:
+    loaded_rules = _load_rules(rules)
     return _render(
         home=store.recent_runs(limit=25),
         flaky=[
             v
-            for v in (analysis.analyze_flaky(store.cases_for_node(n), n) for n in store.all_nodeids())
+            for v in (
+                analysis.analyze_flaky(store.cases_for_node(n), n, loaded_rules)
+                for n in store.all_nodeids()
+            )
             if v.flaky
         ],
+        rules=loaded_rules,
     )
 
 
@@ -231,7 +255,10 @@ def _sparkline(values: list[float], width: int = 160, height: int = 36) -> str:
     )
 
 
-def _render(home: list[dict], flaky: list) -> str:
+def _render(home: list[dict], flaky: list, rules: dict | None = None) -> str:
+    # rules 缺省时不读文件系统：moving_direction 与下面那句文案都会回落到
+    # 模块常量，而模块常量与 YAML 当前默认值一致，渲染结果逐字节相同。
+    tol_pct = analysis.tolerance_from_rules(rules)[0]
     rows_html = []
     for r in home:
         m = _metrics_of(r["run_id"])
@@ -270,7 +297,7 @@ def _render(home: list[dict], flaky: list) -> str:
                 series.append(min(float(pm["p95_ms"]), 500.0))
         if len(series) < 2:
             continue
-        direction = analysis.moving_direction(series)
+        direction = analysis.moving_direction(series, rules=rules)
         trend_html.append(
             f'<div style="margin:6px 0 14px"><div class="mono" style="margin-bottom:3px">'
             f'{r["kind"]}/{r["label"]} <span class="muted">P95 走势（{len(series)} 轮）· '
@@ -360,6 +387,6 @@ def _render(home: list[dict], flaky: list) -> str:
 <div class="note">
 P95 比平均值值得看：平均值会被少数极快的请求拉平，而用户抱怨的永远是长尾。
 RPS 掉、P95 涨、错误率起 —— 这三件事同时出现才是"容量到顶"，
-单独一项抖动通常是噪声（本平台的口径里 {analysis.DEGRADATION_TOLERANCE:.0%} 以内算持平）。
+单独一项抖动通常是噪声（本平台的口径里 {tol_pct:.0%} 以内算持平）。
 </div>
 </body></html>"""
