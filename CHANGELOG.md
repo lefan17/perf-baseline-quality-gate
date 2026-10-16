@@ -49,11 +49,11 @@
 ### 文档
 
 - 修正测试数与耗时的过期口径（实测，命令见 `CONTRIBUTING.md`）：
-  `135 passed / ~46s / ~50s` → **175 passed / 82s**；`README.md` 的用例表
+  `135 passed / ~46s / ~50s` → **176 passed / 78s**；`README.md` 的用例表
   从 6 行补到 9 行（新增 `test_r3_end_to_end.py` / `test_rules_single_source.py` /
-  `test_baseline_snapshot.py`，合计 175）；覆盖率双口径
-  `1829 stmts / 1043 miss / 43%` → **1950 / 1082 / 45%**，
-  `--cov=.` `2597 / 1046 / 60%` → **3110 / 1092 / 65%**。
+  `test_baseline_snapshot.py`，合计 176）；覆盖率双口径
+  `1829 stmts / 1043 miss / 43%` → **1958 / 1088 / 44%**，
+  `--cov=.` `2597 / 1046 / 60%` → **3130 / 1098 / 65%**。
   `README.md` 的「GitHub runner 实测」表是**时点快照**，数字一个字没改。
 - `docs/度量口径.md`：`R3` 无基线时的描述从「PASS + WARNING」改为
   「`[SKIP]` + WARNING，不是 PASS 也不是 FAIL」，并写清为什么

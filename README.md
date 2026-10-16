@@ -129,7 +129,7 @@
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（175 passed，约 82 秒）
+# 2. 跑平台自身的测试（176 passed，约 78 秒）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -388,7 +388,7 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-175 passed in ~82s
+176 passed in ~78s
 ```
 
 | 测试文件 | 用例数 | 覆盖 |
@@ -401,8 +401,8 @@ $ pytest tests/ -q
 | `test_dashboard.py` | 13 | 看板渲染接线（折线真的被画出来，不是定义了没用）+ 汇总口径单一来源 |
 | `test_r3_end_to_end.py` | 2 | R3 端到端：真的压一轮、真的比基线、真的会变红（`sut` + `perf` 标记） |
 | `test_rules_single_source.py` | 10 | 阈值只有一个住址（`gate_rules.yaml`），改 YAML 真的会改判定 |
-| `test_baseline_snapshot.py` | 24 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 |
-| **合计** | **175** | |
+| `test_baseline_snapshot.py` | 25 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 / 记的是量出基线的机器 |
+| **合计** | **176** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -585,8 +585,8 @@ profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相
 
 | 口径 | 命令 | 实测 |
 |---|---|---|
-| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **1950 stmts / 1082 miss / 45%** |
-| 含 `tests/` 自身 | `--cov=.` | 3110 stmts / 1092 miss / 65% |
+| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **1958 stmts / 1088 miss / 44%** |
+| 含 `tests/` 自身 | `--cov=.` | 3130 stmts / 1098 miss / 65% |
 
 **门槛取 40**，理由：
 

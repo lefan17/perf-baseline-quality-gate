@@ -312,6 +312,21 @@ jobs:
           path: reports/
           retention-days: 14
 
+      # 把**这一轮在 runner 上量出来的**库交出来给人。
+      #
+      # 基线必须由人显式重设（CI 绝不会自己设），但"重设"需要一个可信的数据源：
+      # 拿开发机的数字去当 CI 的基线，就变成跨机器比较 —— 见 P-15 记的代价。
+      # 所以这里只做一件事：把 runner 自己的测量结果上传，由人下载后执行
+      # `baseline set --run-id <本轮>` + `baseline export`，再把快照提交进仓库。
+      # **CI 不改基线，只提供证据。**
+      - name: 上传本轮测量库（供人重设基线用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-quality-db
+          path: quality.db
+          retention-days: 14
+
       - name: 失败摘要
         if: failure()
         run: |

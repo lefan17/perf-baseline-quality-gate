@@ -703,10 +703,18 @@ def _default_snapshot_path(label: str) -> Path:
 
 def _baseline_export(args: argparse.Namespace) -> int:
     """把本机那条基线写成快照文件 —— 人做完这一步再 `git add` 提交。"""
-    snap = baseline.snapshot_of("perf", args.label, platform_info())
-    if snap is None:
+    b = store.get_baseline("perf", args.label)
+    if b is None:
         print(f"没有 label={args.label} 的基线可导出（先跑一轮并用 --set-baseline 设定）",
               file=sys.stderr)
+        return 2
+    # 快照记的必须是**量出这条基线的那台机器**，不是执行 export 的这台机器。
+    # 典型场景：人把 runner 上传的库下载到开发机上导出快照 —— 那时本机与
+    # "量出基线的机器"不是同一台，写错了会让后来读快照的人判断错方向。
+    measured_on = _run_platform(b["run_id"]) or platform_info()
+    snap = baseline.snapshot_of("perf", args.label, measured_on)
+    if snap is None:  # pragma: no cover - 上面刚查到过，这里只为类型收口
+        print(f"没有 label={args.label} 的基线可导出", file=sys.stderr)
         return 2
     path = Path(args.file) if args.file else _default_snapshot_path(args.label)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -766,6 +774,21 @@ def _run_config(run_id: str) -> dict:
     if row is None:
         return {}
     return json.loads(row["config_json"] or "{}")
+
+
+def _run_platform(run_id: str) -> dict:
+    """读一轮运行是**在哪台机器上**量出来的（runs.platform_json）。
+
+    快照里的 `platform` 必须是这个，而不是"执行 export 的这台机器"：
+    两者经常不是同一台 —— 本机基线在 runner 上重设、或把 runner 上传的
+    库下载到开发机上导出，都会让"是哪台机器量的"这句话失真。
+    读不到（老库没有这列内容）才退回本机。
+    """
+    with store.tx() as conn:
+        row = conn.execute("SELECT platform_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    if row is None:
+        return {}
+    return json.loads(row["platform_json"] or "{}") or {}
 
 
 def cmd_trend(args: argparse.Namespace) -> int:

@@ -14,7 +14,7 @@ python -m venv .venv
 
 # 2. 一键脚本（把下面几条命令都包好了）
 pwsh -File scripts\run.ps1 -Task help
-pwsh -File scripts\run.ps1 -Task test      # 跑 175 条用例
+pwsh -File scripts\run.ps1 -Task test      # 跑 176 条用例
 pwsh -File scripts\run.ps1 -Task lint      # ruff + mypy + 依赖一致性
 pwsh -File scripts\run.ps1 -Task perf      # 一轮真压测 + 门禁（约 1 分钟）
 
@@ -62,14 +62,14 @@ README 里每一个数字都是实测的。改文档时：
 - 已存在的数字**不许改**，除非你自己重跑并给出新输出；
 - 尤其是这些**有论证的**数字，改动要先读懂它们的论证：
   - `gate_rules.yaml` 的 `slow_report_p95_ms_max: 150.0` / `n1_over_agg_max: 10.0`
-  - README 里的 2.27σ 容忍带论证、7.81× 比值、175 passed、12 条门禁规则
+  - README 里的 2.27σ 容忍带论证、7.81× 比值、176 passed、12 条门禁规则
 
 ---
 
 ## 三、测试纪律
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 175 passed，约 82 秒
+& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 176 passed，约 78 秒
 ```
 
 - **不许删测试或改断言**来让门槛达标。门槛是为了暴露问题，不是为了通过。

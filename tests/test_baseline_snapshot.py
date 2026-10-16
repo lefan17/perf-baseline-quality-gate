@@ -36,6 +36,7 @@ from pathlib import Path
 
 import pytest
 
+import platform_cli
 from metrics import baseline, store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -64,7 +65,7 @@ def _db() -> Path:
     return store.db_path()
 
 
-def _seed_run(run_id: str, *, p95_ms: float) -> None:
+def _seed_run(run_id: str, *, p95_ms: float, platform_info: dict | None = None) -> None:
     """造一轮已入库的 perf 记录 —— 与 `run` 子命令落库的形状一致。
 
     `metrics_json` 必须是完整的一份（`baseline set` 会直接读 `p95_ms`/`p99_ms`/`rps`
@@ -87,7 +88,7 @@ def _seed_run(run_id: str, *, p95_ms: float) -> None:
         "max_ms": 200.0,
         "max_inflight": 10,
     }
-    store.upsert_run(run_id, "perf", LABEL, config=dict(CONFIG))
+    store.upsert_run(run_id, "perf", LABEL, config=dict(CONFIG), platform_info=platform_info or {})
     store.add_steps(run_id, [step])
     metrics = {k: step[k] for k in ("total", "error_rate", "rps", "mean_ms", "p95_ms", "p99_ms", "max_ms")}
     store.finish_run(run_id, "passed", metrics)
@@ -285,6 +286,26 @@ class TestImportBoundaries:
         assert proc.returncode == 2
         assert "没有" in proc.stderr
         assert not out.exists(), "没有基线时不该造出一个空快照文件"
+
+    def test_export_records_the_machine_that_measured_it_not_this_one(self, tmp_path):
+        """快照里的 `platform` 必须是**量出基线的那台机器**。
+
+        真实场景：CI runner 上传了它的库，人下载到开发机上 `baseline set` +
+        `baseline export`。那时本机是 Windows、被测机器是 Linux —— 写成本机
+        会把"是哪台机器量的"这句关键信息记反，而它正是判断跨机器比较的依据。
+        """
+        runner = {"python": "3.12.15", "platform": "Linux-6.17.0-1022-azure", "cpu_count": 4}
+        _seed_run("runner-run", p95_ms=120.0, platform_info=runner)
+        assert _cli("baseline", "set", "--label", LABEL).returncode == 0
+
+        out = tmp_path / "out.json"
+        exported = _cli("baseline", "export", "--label", LABEL, "--file", str(out))
+        assert exported.returncode == 0, exported.stdout + exported.stderr
+
+        recorded = json.loads(out.read_text(encoding="utf-8"))["platform"]
+        assert recorded["platform"] == "Linux-6.17.0-1022-azure"
+        assert recorded["cpu_count"] == 4
+        assert recorded != platform_cli.platform_info(), "记成本机等于把跨机器这件事抹掉了"
 
 
 # --------------------------------------------------------------------------- #

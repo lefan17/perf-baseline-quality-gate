@@ -32,7 +32,7 @@
 
 ## 二、如果是改代码
 
-- [ ] `pytest tests/ -q` → **175 passed**（用例数与基线一致，一条不少）
+- [ ] `pytest tests/ -q` → **176 passed**（用例数与基线一致，一条不少）
 - [ ] `python -m ruff check .` 通过
 - [ ] `python -m mypy` 通过
 - [ ] 没有为了让检查变绿而加 `# type: ignore` / `# noqa` / 放宽容忍带
