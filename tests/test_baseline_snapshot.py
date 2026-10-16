@@ -342,6 +342,24 @@ class TestImportDrivesR3:
         assert "p95_ms" in line, "必须指出是哪个指标劣化了"
         assert proc.returncode == 1, f"劣化必须让退出码为 1：\n{proc.stdout[-1500:]}"
 
+    def test_advisory_mode_still_reports_the_degradation_but_does_not_block(self, tmp_path):
+        """CI 用的 `--r3-advisory`：劣化照旧打印，但退出码是 0。
+
+        这是"如实"的关键：报告里必须还有劣化项与百分比（不是恒 PASS、不是静默），
+        同时说清这条判据在本环境噪声主导、不足以拦人。
+        """
+        path = _write_snapshot(tmp_path / "snap.json")
+        _seed_run("curr-9", p95_ms=150.0)  # 劣化 50%，远超 10% 容忍带
+
+        assert _cli("baseline", "import", "--label", LABEL, "--file", str(path)).returncode == 0
+        proc = _cli("gate", "--run-id", "curr-9", "--r3-advisory")
+        line = _r3_line(proc.stdout)
+
+        assert "相对基线劣化" in line and "p95_ms" in line, f"劣化必须照旧打印：{line}"
+        assert "[FAIL]" not in line, f"advisory 不该标 FAIL（那会被读成拦住）：{line}"
+        assert "噪声主导" in line, f"必须如实说明为什么这条判据不算数：{line}"
+        assert proc.returncode == 0, "advisory 模式下 R3 不拦人"
+
     def test_incomparable_baseline_is_skipped_not_passed(self, tmp_path):
         """快照的配置与本轮不同 → 必须报 [SKIP]（无法判定），而不是放行。
 

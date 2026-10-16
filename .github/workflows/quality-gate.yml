@@ -295,6 +295,13 @@ jobs:
       # 所以这里**不需要**设 PERF_ENV。要用档案时显式注入即可，
       # 例如下面这行取消注释就跑 staging 档案（结果库落在 var/staging/）：
       #   env: { PERF_ENV: staging }
+      #
+      # `--r3-advisory`：R3 照旧做对比、照旧打印劣化项与百分比、照旧入库，
+      # 但**不拦人**。为什么：容忍带 10% 是在开发机上按 P95 的轮间波动定的，
+      # 而 runner 上同一份配置连跑几轮，p99 / max 的轮间波动远大于该容忍带
+      # （原始数字见 docs/已知问题.md P-16）。这不是"放宽阈值"——阈值一个字没动，
+      # 改的是"这条判据在当前环境下算不算数"。R1（错误率）与 R2（绝对 P95）
+      # 仍然 blocking，绝对劣化依然拦得住。
       - name: 跑压测并判定门禁
         run: |
           # 退出码 0 = 放行，1 = 拦住（存在 blocking 未通过）
@@ -302,7 +309,8 @@ jobs:
             --label ci-perf \
             --items 20000 \
             --step-users 10 20 \
-            --step-duration 8
+            --step-duration 8 \
+            --r3-advisory
 
       - name: 上传本轮报告
         if: always()

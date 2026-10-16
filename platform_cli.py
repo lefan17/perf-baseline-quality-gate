@@ -286,7 +286,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             analysis.check_comparability(config, baseline.get("config"), rules) if baseline else None
         )
 
-        report = gate.evaluate_perf(run_metrics, baseline, deltas, rules, comparability)
+        report = gate.evaluate_perf(run_metrics, baseline, deltas, rules, comparability,
+                                    r3_advisory=args.r3_advisory)
         store.add_gate_results(run_id, [r.as_dict() for r in report.results])
         status = "failed" if report.blocked else "passed"
         store.finish_run(run_id, status, {"knee": knee, **run_metrics})
@@ -625,7 +626,8 @@ def cmd_gate(args: argparse.Namespace) -> int:
         analysis.check_comparability(_run_config(args.run_id), baseline.get("config"), rules)
         if baseline else None
     )
-    report = gate.evaluate_perf(merged, baseline, deltas, rules, comparability)
+    report = gate.evaluate_perf(merged, baseline, deltas, rules, comparability,
+                                r3_advisory=args.r3_advisory)
     store.add_gate_results(args.run_id, [r.as_dict() for r in report.results])
     print(f"run_id={args.run_id} label={label}")
     print(report.render())
@@ -1134,6 +1136,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--timeout", type=float, default=10.0)
     r.add_argument("--warmup-drop", type=float, default=1.5, help="丢弃前 N 秒热身样本")
     r.add_argument("--set-baseline", action="store_true", help="把本轮显式设为基线")
+    r.add_argument("--r3-advisory", action="store_true",
+                   help="R3 只报数不拦人：这条判据在本环境噪声主导（见 docs/已知问题.md P-16）")
     add_json_flags(r)
     r.set_defaults(func=cmd_run)
 
@@ -1164,6 +1168,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = sub.add_parser("gate", help="对已入库的 run 重新判定门禁")
     g.add_argument("--run-id", required=True)
+    g.add_argument("--r3-advisory", action="store_true",
+                   help="R3 只报数不拦人：这条判据在本环境噪声主导（见 docs/已知问题.md P-16）")
     add_json_flags(g)
     g.set_defaults(func=cmd_gate)
 

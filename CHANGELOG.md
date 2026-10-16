@@ -16,6 +16,22 @@
 
 ### 修复
 
+- **CI 上的 R3 降级为"只报数不拦人"（`--r3-advisory`），并把噪声量出来留档。**
+  基线接上之后 R3 确实开始判了，但立刻暴露出**判据被噪声淹没**：同一提交、
+  同一配置、同一台 runner 连跑 4 轮，R3 一次 PASS 三次 FAIL，红的项每次都不一样。
+  从 runner 上传的 `ci-quality-db` 直接读出：单轮 CV p95 11.7% / **p99 39.0% /
+  max 54.1%**，而容忍带 10% 是在**开发机按 P95**定的（`CV_diff ≈ 4.40%` → 2.27σ）。
+  到 runner 上容忍带对 p99 / max 只剩 **0.18σ / 0.13σ** —— 每轮必然越带。
+
+  处置：`evaluate_perf` 新增 `r3_advisory`（默认关闭），`run` / `gate` 新增
+  `--r3-advisory`，CI 的 `run` 显式带上。R3 照样算、照样把劣化项与百分比
+  打印进报告、照样入库，只是 `severity` 由 blocking 降为 warning，不进 `blocked`。
+  **`gate_rules.yaml` 的阈值一个字没改**，快照也没有为了变绿而重设 ——
+  那是"调参直到它说 PASS"。R1（错误率）与 R2（绝对 P95）仍然 blocking。
+  代价如实记录：CI 上的 R3 从此不会让流水线变红，"慢慢变慢"在 CI 上
+  仍然看不见。完整数字、另三条被否决的路、以及允许降级的四条前提，
+  见 `docs/已知问题.md` P-16 与 `CONTRIBUTING.md` §1b。
+
 - **让 R3 在流水线上真的判过一次。**这个平台的核心价值是抓"慢慢变慢"，
   而线上（run `38055102821`）每一次性能门禁的日志都是
   `[PASS] R3-baseline-degradation: 未设置基线，跳过劣化对比` ——
@@ -49,11 +65,11 @@
 ### 文档
 
 - 修正测试数与耗时的过期口径（实测，命令见 `CONTRIBUTING.md`）：
-  `135 passed / ~46s / ~50s` → **176 passed / 78s**；`README.md` 的用例表
+  `135 passed / ~46s / ~50s` → **180 passed / 85s**；`README.md` 的用例表
   从 6 行补到 9 行（新增 `test_r3_end_to_end.py` / `test_rules_single_source.py` /
-  `test_baseline_snapshot.py`，合计 176）；覆盖率双口径
-  `1829 stmts / 1043 miss / 43%` → **1958 / 1088 / 44%**，
-  `--cov=.` `2597 / 1046 / 60%` → **3130 / 1098 / 65%**。
+  `test_baseline_snapshot.py`，合计 180）；覆盖率双口径
+  `1829 stmts / 1043 miss / 43%` → **1964 / 1088 / 45%**，
+  `--cov=.` `2597 / 1046 / 60%` → **3165 / 1098 / 65%**。
   `README.md` 的「GitHub runner 实测」表是**时点快照**，数字一个字没改。
 - `docs/度量口径.md`：`R3` 无基线时的描述从「PASS + WARNING」改为
   「`[SKIP]` + WARNING，不是 PASS 也不是 FAIL」，并写清为什么

@@ -305,7 +305,7 @@ def _row_diffs(agg_rows: list[dict], n1_rows: list[dict]) -> tuple[list[str], in
 
 
 def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules: dict,
-                  comparability=None) -> GateReport:
+                  comparability=None, r3_advisory: bool = False) -> GateReport:
     """性能门禁。
 
     `run_metrics` 是"本轮整轮"的汇总（含 p95_ms/p99_ms/error_rate/rps），
@@ -315,6 +315,19 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
     "不可比 / 无法判定"时，R3 走 `skipped` —— **不给劣化百分比**。这是刻意的：
     把两轮不同配置的差值当成劣化，比不给结论危险得多。不传则保持原行为
     （老调用路径与单元测试构造的极小 baseline 都不带配置）。
+
+    `r3_advisory` 把 R3 从 blocking 降为只报数（`severity=WARNING`，仍
+    `passed=False`、仍打印劣化项与百分比、仍入库）。它**不改任何阈值** ——
+    改的只是"这条判据在这一环境下算不算数"。
+
+    为什么需要它：容忍带 10% 是在开发机上按 P95 的轮间波动定的（见
+    `gate_rules.yaml` 与 `docs/度量口径.md`）。CI runner 上同一份配置连跑几轮，
+    实测 P95 稳、**p99 / max 的轮间波动远大于容忍带**（数字见
+    `docs/已知问题.md` P-16）。于是 R3 在 CI 上会随噪声随机变红，
+    而"会随机变红的门禁"唯一的结果是训练所有人忽略红灯。
+    诚实做法不是放宽阈值（那是调参直到它说 PASS），而是：
+    **照实打印判定，同时说清这条判据在这里不足以区分劣化与噪声。**
+    默认 `False`：本机、单测、以及任何噪声未被证明主导的环境保持原行为。
     """
     report = GateReport()
     perf = rules.get("perf", {})
@@ -400,12 +413,25 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                 )
             )
         else:
+            # 有基线、配置可比 —— 真做劣化判定。
+            # advisory 模式下照样打印劣化项与百分比（不是静默、不是恒 PASS），
+            # 只是不把这条判据当拦人的依据。
+            advisory = (
+                "本轮以只报数模式运行（`--r3-advisory`）：这条判据在当前环境下"
+                "噪声主导，不足以区分劣化与噪声，因此不拦人。劣化项本身仍然成立，"
+                "要当回归处理请先按 `docs/已知问题.md` P-16 确认噪声量级。"
+                if degraded and r3_advisory
+                else ""
+            )
+            message = f"相对基线劣化 {len(degraded)} 项：{detail}"
+            if advisory:
+                message = f"{message}；⚠ {advisory}"
             report.results.append(
                 RuleResult(
                     rule_id="R3-baseline-degradation",
                     passed=not degraded,
-                    severity=BLOCKING,
-                    message=f"相对基线劣化 {len(degraded)} 项：{detail}",
+                    severity=WARNING if r3_advisory else BLOCKING,
+                    message=message,
                     observed={d.metric: d.current for d in degraded},
                     expected=f"涨幅均 ≤ 容忍带",
                     action="定位这一步的提交：先用 `--scenario slow_report` 单场景复压，"

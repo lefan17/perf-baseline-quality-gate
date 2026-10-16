@@ -402,6 +402,38 @@ class TestPerfGate:
                                     deltas, RULES)
         assert report.blocked
 
+    def test_advisory_keeps_the_verdict_but_drops_blocking(self):
+        """`r3_advisory=True`：劣化照旧算出来、照旧打印，只是不拦人。
+
+        这不是"恒 PASS"——`passed` 仍是 False，`describe()` 里仍有劣化项与
+        百分比，`report.failed` 里仍有这条。区别只在 severity 与 blocked。
+        """
+        deltas = analysis.compare_to_baseline({"p95_ms": 200.0}, {"p95_ms": 100.0})
+        report = gate.evaluate_perf(_perf_run(p95_ms=200.0), {"metrics": {"p95_ms": 100.0}},
+                                    deltas, RULES, r3_advisory=True)
+        r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
+        assert not r3.passed, "只报数不等于判定通过"
+        assert r3.severity == gate.WARNING
+        assert not r3.skipped, "它真的判了，不该混进 skip"
+        assert "相对基线劣化 1 项" in r3.message and "p95_ms" in r3.message
+        assert "噪声主导" in r3.message, "必须如实说明这条判据为什么不算数"
+        assert not report.blocked and r3 in report.failed
+
+    def test_advisory_does_not_change_absolute_thresholds(self):
+        """只报数模式**不放宽任何阈值**：R1/R2 该拦还是拦。"""
+        report = gate.evaluate_perf(_perf_run(error_rate=0.05, p95_ms=9999.0), None, [], RULES,
+                                    r3_advisory=True)
+        assert report.blocked, "错误率与绝对 P95 是兜底线，advisory 不该动它们"
+
+    def test_advisory_with_a_clean_run_still_passes(self):
+        """没劣化时 advisory 不改变任何东西（不制造假的劣化文案）。"""
+        deltas = analysis.compare_to_baseline({"p95_ms": 100.0}, {"p95_ms": 100.0})
+        report = gate.evaluate_perf(_perf_run(p95_ms=100.0), {"metrics": {"p95_ms": 100.0}},
+                                    deltas, RULES, r3_advisory=True)
+        r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
+        assert r3.passed and "全部指标在容忍带内" in r3.message
+        assert "噪声主导" not in r3.message, "没劣化就别提噪声，那是噪音（字面意义的）"
+
     def test_small_sample_is_warning_only(self):
         """样本不足只警告。
 
