@@ -2,12 +2,13 @@
 
 ## 为什么必须有这个文件
 
-`metrics/gate.py:358-367`：`baseline is None` 时 R3（`R3-baseline-degradation`，
-本平台对外宣称的核心卖点「抓住慢慢变慢」）直接 `passed=True` + 一条
-「未设置基线，跳过劣化对比」。而 `.github/workflows/quality-gate.yml:264-268`
-的「恢复基线」步用 `download-artifact` 拉 `quality-db-and-reports` —— 那个
-artifact 是**同一个 run 自己**在 `:214` 上传的（由 `platform-tests` job 产出），
-所以 `baselines` 表恒空。
+`metrics/gate.py:371-393`：`baseline is None` 时 R3（`R3-baseline-degradation`，
+本平台对外宣称的核心卖点「抓住慢慢变慢」）曾经直接 `passed=True` + 一条
+「未设置基线，跳过劣化对比」（现在改成 `skipped=True` + `[SKIP]`，见 `:379-380`）。
+而「恢复基线」步（现在在 `.github/workflows/quality-gate.yml:275`）曾经用
+`download-artifact` 拉 `quality-db-and-reports` —— 那个 artifact 是**同一个 run
+自己**在 `:214` 上传的（由 `platform-tests` job 产出），所以 `baselines` 表恒空。
+这段历史记在 `quality-gate.yml:260-266` 的注释里。
 
 两者叠加的后果：这条规则不会报错、不会变红，只会安静地打印一行 `[PASS]`，
 于是在流水线上**从未真正判过一次**。
