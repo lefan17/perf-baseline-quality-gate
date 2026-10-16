@@ -21,8 +21,8 @@ N+1 性能缺陷）、自研压测引擎、基线劣化对比与门禁规则引�
 
 ## 依赖漏洞
 
-- `Dependabot` 覆盖 `pip` 与 `github-actions`，每周一 03:30（Asia/Shanghai）；主版本升级被
-  `ignore` 挡住 —— 依赖主版本变更会让既有基线失效，必须是人的一次显式提交。
+- `Dependabot` 覆盖 `pip` 与 `github-actions`，每周一 03:30（Asia/Shanghai），只开 PR。主版本一律
+  不由机器人提（`pip` 走 `ignore`，`actions` 的组只收 minor/patch）——主版本变更会让既有基线失效。
 - CI 的 `security-audit` job 跑 `pip-audit --requirement requirements.txt`，**非阻塞**：它的
   结论依赖漏洞库快照，同一 commit 今天绿明天红是常态，做成阻塞项长期必然被人加 `|| true`。
   结论写进 step summary 与 artifact，由人判断。
