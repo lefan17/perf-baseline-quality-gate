@@ -2,29 +2,29 @@
   "schema": 1,
   "kind": "perf",
   "label": "ci-perf",
-  "run_id": "perf-20261016-224709-e04555",
-  "set_at": "2026-10-16T15:26:50+00:00",
+  "run_id": "perf-20261016-161127-180f9d",
+  "set_at": "2026-10-16T16:12:58+00:00",
   "metrics": {
     "knee": {
       "users": 20,
-      "reason": "每用户吞吐较峰值下降 45.1%（并持续到末级）",
-      "peak_rps_per_user": 32.4023,
-      "rps_per_user": 17.7981,
-      "p95_ms": 136.75,
-      "p99_ms": 174.941,
-      "rps": 355.962,
+      "reason": "每用户吞吐较峰值下降 60.0%（并持续到末级）",
+      "peak_rps_per_user": 48.1908,
+      "rps_per_user": 19.2652,
+      "p95_ms": 110.109,
+      "p99_ms": 145.982,
+      "rps": 385.304,
       "error_rate": 0.0
     },
-    "total": 4475,
-    "duration_s": 13.161999999999999,
+    "total": 5668,
+    "duration_s": 13.078,
     "error_rate": 0.0,
-    "rps": 339.99392189636836,
-    "mean_ms": 43.609077094972065,
-    "p50_ms": 47.026,
-    "p90_ms": 107.584,
-    "p95_ms": 136.75,
-    "p99_ms": 174.941,
-    "max_ms": 246.626,
+    "rps": 433.3996023856859,
+    "mean_ms": 34.18489872971065,
+    "p50_ms": 43.454,
+    "p90_ms": 91.128,
+    "p95_ms": 53.926,
+    "p99_ms": 81.065,
+    "max_ms": 224.371,
     "max_inflight": 20
   },
   "config": {
@@ -39,12 +39,12 @@
     "think_time_s": 0.0
   },
   "platform": {
-    "python": "3.12.10",
-    "platform": "Windows-11",
-    "cpu_count": 16,
+    "python": "3.12.15",
+    "platform": "Linux-6.17.0-1022-azure",
+    "cpu_count": 4,
     "fastapi": "0.143.0",
     "uvicorn": "0.54.0",
     "requests": "2.34.2",
-    "machine": "AMD64"
+    "machine": "x86_64"
   }
 }

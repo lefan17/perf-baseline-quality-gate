@@ -251,6 +251,20 @@ git add baselines/ci-perf.json; git commit -m "chore(baseline): 重设 ci-perf �
 | 文件损坏 / 版本不认识 / label 不符 | `baseline import` 退出码 2，**这一步就红** —— 读不对的基线必须吵闹 |
 | 快照的配置与本轮不可比（items/并发/场景/报表实现不同） | R3 报 `[SKIP]「两轮配置不可比」`，不给劣化百分比 |
 
+**基线量在哪台机器上，就用哪台机器的数字。** 快照里的 `platform` 记的是
+**量出这条基线的那台机器**（不是执行 `export` 的那台）。本仓现在这份 `ci-perf`
+基线就是在 GitHub runner 上量的：`perf-gate` 每次都会把本轮测量库作为 artifact
+`ci-quality-db` 交出来，人下载后
+
+```powershell
+$env:QUALITY_DB = "<下载下来的 quality.db>"
+& ".\.venv\Scripts\python.exe" platform_cli.py baseline set --label ci-perf --run-id <本轮 run_id>
+& ".\.venv\Scripts\python.exe" platform_cli.py baseline export --label ci-perf
+```
+
+再提交快照。用开发机的数字去当 CI 的基线，判出来的红绿反映的是**两台机器形状不同**，
+不是代码好坏 —— P-15 记录的那次红就是这么来的。**CI 从不改基线，它只提供证据。**
+
 **没选 artifact / 存储分支，理由**：`quality-db-and-reports` 由**同一个 run 自己**的
 `platform-tests` job 上传，跨 job 下载拿到的是本轮刚建的库（`baselines` 表恒空）——
 这正是原来的缺陷；存储分支则要求给 CI `contents: write`，等于给它一个"改基线"的能力，
