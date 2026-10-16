@@ -226,6 +226,45 @@ class TestFindKnee:
         """服务全挂（rps 全 0）不能除零崩溃 —— 这时更要出报告。"""
         assert analysis.find_knee([_step(10, 0.0), _step(20, 0.0)]) is None
 
+    def test_warmup_ramp_is_not_a_knee(self):
+        """低并发头几级天然偏低（预热/连接建立），全程线性扩展时不能报拐点。
+
+        回归：旧实现拿"整段序列的最大值"当基准，于是第 1 级 4.0 相对后面
+        稳定下来的 5.0 正好掉 20%，拐点被报在**最低并发**处，容量结论
+        被打成 10 并发。
+        """
+        steps = [
+            _step(10, 40.0),
+            _step(20, 100.0),
+            _step(40, 200.0),
+            _step(80, 400.0),
+        ]
+        assert analysis.find_knee(steps) is None
+
+    def test_transient_dip_that_recovers_is_not_a_knee(self):
+        """中途抖一下、随后又回到峰值 —— 那不是容量边界。"""
+        steps = [
+            _step(10, 50.0),
+            _step(20, 100.0),
+            _step(40, 160.0),
+            _step(80, 400.0),
+        ]
+        assert analysis.find_knee(steps) is None
+
+    def test_sustained_decline_is_found_after_a_recovered_dip(self):
+        """先抖一下恢复、之后才真的持续掉下去 —— 报持续下降的那一级。"""
+        steps = [
+            _step(10, 50.0),
+            _step(20, 100.0),
+            _step(40, 160.0),
+            _step(80, 400.0),
+            _step(160, 480.0),
+        ]
+        knee = analysis.find_knee(steps)
+        assert knee is not None
+        assert knee["users"] == 160
+        assert "持续到末级" in knee["reason"]
+
     def test_last_stable_step_is_before_knee(self):
         """容量的结论取拐点前一级，不是拐点本身。
 

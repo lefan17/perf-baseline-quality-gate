@@ -259,39 +259,68 @@ def find_knee(steps: list[dict]) -> dict | None:
     `steps` 需要按并发数升序，每项至少含 users / rps / p95_ms / error_rate。
 
     判据（两个，命中任一即算）：
-      1. 每用户吞吐相对峰值掉 20% —— 这是"加人不再换来产能"的定义；
+      1. 每用户吞吐较全程峰值掉 20%，且这一下降持续到最后一级 —— 这是"加人不再换来产能"的定义；
       2. 错误率超过 1% —— 这是"系统开始拒客"的定义。
 
     为什么用 `rps / users` 而不是 `rps`：RPS 通常会一直小幅上涨，
     永远不"掉"，看不出饱和。而**每用户吞吐**是先平后塌的，
     它的拐点就是系统的容量边界。
+
+    为什么要额外要求"持续到最后一级"：容量梯度是爬坡测出来的，低并发的
+    头几级天然偏低（线程池预热、连接建立、页面缓存未热）。只看"比峰值低
+    20%"就判定，会让一个 10→20→40→80 全程线性扩展的健康梯度，因为第 1 级
+    每用户吞吐偏低而在**最低并发**处报出拐点。中途抖一下又回到峰值，
+    说明那不是容量边界。
     """
     if len(steps) < 2:
         return None
-    peak_rps_per_user = 0.0
-    for s in steps:
-        rps_per_user = (s.get("rps", 0) / s["users"]) if s.get("users") else 0.0
-        peak_rps_per_user = max(peak_rps_per_user, rps_per_user)
+
+    per_user = [(s.get("rps", 0) / s["users"]) if s.get("users") else 0.0 for s in steps]
+    peak_rps_per_user = max(per_user)
     if peak_rps_per_user <= 0:
         return None
 
-    for s in steps:
-        rps_per_user = (s.get("rps", 0) / s["users"]) if s.get("users") else 0.0
-        drop = (peak_rps_per_user - rps_per_user) / peak_rps_per_user
-        over_err = (s.get("error_rate") or 0.0) > KNEE_ERROR_RATE
-        if drop >= KNEE_RPS_PER_USER_DROP or over_err:
-            return {
-                "users": s["users"],
-                "reason": "每用户吞吐较峰值下降 %.1f%%" % (drop * 100)
-                if drop >= KNEE_RPS_PER_USER_DROP
-                else "错误率 %.2f%% 超过 %.0f%%" % ((s.get("error_rate") or 0) * 100, KNEE_ERROR_RATE * 100),
-                "peak_rps_per_user": round(peak_rps_per_user, 4),
-                "rps_per_user": round(rps_per_user, 4),
-                "p95_ms": s.get("p95_ms"),
-                "p99_ms": s.get("p99_ms"),
-                "rps": s.get("rps"),
-                "error_rate": s.get("error_rate"),
-            }
+    # 判据 1 的落点：最后一次"仍在峰值附近"之后的那一级。从后往前定，
+    # 才不会把中间抖一下就恢复的那一级当成容量边界。
+    threshold = peak_rps_per_user * (1.0 - KNEE_RPS_PER_USER_DROP)
+    last_healthy = 0
+    for i, value in enumerate(per_user):
+        if value >= threshold:
+            last_healthy = i
+    declined_at = last_healthy + 1 if last_healthy + 1 < len(steps) else None
+
+    # 判据 2 的落点：第一次错误率超线。两条判据各自独立成立，取更早的那个。
+    errored_at = None
+    for i, s in enumerate(steps):
+        if (s.get("error_rate") or 0.0) > KNEE_ERROR_RATE:
+            errored_at = i
+            break
+
+    candidates = [i for i in (declined_at, errored_at) if i is not None]
+    if not candidates:
+        return None
+    idx = min(candidates)
+    step = steps[idx]
+    rps_per_user = per_user[idx]
+    drop = (peak_rps_per_user - rps_per_user) / peak_rps_per_user
+    if idx == declined_at:
+        reason = "每用户吞吐较峰值下降 %.1f%%（并持续到末级）" % (drop * 100)
+    else:
+        reason = "错误率 %.2f%% 超过 %.0f%%" % (
+            (step.get("error_rate") or 0) * 100,
+            KNEE_ERROR_RATE * 100,
+        )
+
+    return {
+        "users": step["users"],
+        "reason": reason,
+        "peak_rps_per_user": round(peak_rps_per_user, 4),
+        "rps_per_user": round(rps_per_user, 4),
+        "p95_ms": step.get("p95_ms"),
+        "p99_ms": step.get("p99_ms"),
+        "rps": step.get("rps"),
+        "error_rate": step.get("error_rate"),
+    }
     return None
 
 
