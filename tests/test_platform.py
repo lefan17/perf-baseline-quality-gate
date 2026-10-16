@@ -381,12 +381,20 @@ class TestPerfGate:
         report = gate.evaluate_perf(_perf_run(p95_ms=2000.0), None, [], RULES)
         assert report.blocked
 
-    def test_missing_baseline_is_a_warning_not_a_block(self):
-        """首次运行没有基线，不能被拦住 —— 否则 CI 第一天就是红的。"""
+    def test_missing_baseline_is_a_skip_not_a_pass(self):
+        """首次运行没有基线：不拦人，但**不许长得像"比过了没劣化"**。
+
+        `skipped=True` + `passed=False` 是这条的分界线：
+        标成 `[SKIP]`（"本轮没判定"），而不是 `[PASS]`（"判定为没问题"）。
+        流水线上曾经长期是后者 —— 报告全绿，而门禁的核心价值从未生效。
+        """
         report = gate.evaluate_perf(_perf_run(), None, [], RULES)
         r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
-        assert r3.passed and r3.severity == gate.WARNING
+        assert r3.skipped and not r3.passed
+        assert r3.severity == gate.WARNING, "skip 一律给 warning：只看 severity 的读者不该误读成拦住"
+        assert "[SKIP]" in r3.describe() and "PASS" not in r3.describe()
         assert not report.blocked
+        assert r3 in report.skipped and r3 not in report.failed
 
     def test_degradation_blocks(self):
         deltas = analysis.compare_to_baseline({"p95_ms": 200.0}, {"p95_ms": 100.0})

@@ -75,6 +75,23 @@ class TestParserWiring:
         missing = expected - names
         assert not missing, f"缺少子命令：{missing}"
 
+    def test_baseline_actions_are_a_stable_contract(self):
+        """`baseline` 的 action 集合也是契约 —— CI 按名字调 `baseline import`。
+
+        `quality-gate.yml` 的「恢复基线」步直接跑
+        `platform_cli.py baseline import --label ci-perf`。这个 action 名
+        一旦被改掉（或没注册上），CI 那一步会在**基线本该恢复**的地方失败 ——
+        而失败长什么样取决于 shell，很容易被后人当成"flaky"关掉。
+        """
+        parser = platform_cli.build_parser()
+        action = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        )
+        baseline_parser = action.choices["baseline"]
+        choices = next(a.choices for a in baseline_parser._actions if a.dest == "action")
+        expected = {"set", "show", "export", "import", "clear"}
+        assert set(choices) == expected, f"baseline 的 action 变了：{sorted(choices)}"
+
     @pytest.mark.parametrize(
         "name",
         ["run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "prune", "serve"],

@@ -28,10 +28,11 @@ sys.path.insert(0, str(ROOT))
 
 from bench.engine import Runner  # noqa: E402
 from bench.scenarios import build_engine_mix, configure_item_range, engine_single  # noqa: E402
-from metrics import analysis, gate, store  # noqa: E402
+from metrics import analysis, baseline, gate, store  # noqa: E402
 from sut.server_ctl import start_sut  # noqa: E402
 
 REPORTS_DIR = ROOT / "reports"
+BASELINE_DIR = ROOT / "baselines"
 DEFAULT_RULES = ROOT / "gate_rules.yaml"
 
 
@@ -671,6 +672,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         store.set_baseline("perf", args.label, run_id, metrics, config=_run_config(run_id))
         print(f"[baseline] kind=perf label={args.label} run_id={run_id}")
         print(f"           p95={metrics['p95_ms']}ms p99={metrics['p99_ms']}ms rps={metrics['rps']}")
+        print(f"           下一步：`baseline export --label {args.label}` 把快照提交进仓库，"
+              f"CI 才能拿到这条基线")
         emit(args, {"action": "set", "kind": "perf", "label": args.label,
                     "run_id": run_id, "metrics": metrics})
         return 0
@@ -679,6 +682,10 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         print(json.dumps(b, ensure_ascii=False, indent=2) if b else f"没有 label={args.label} 的基线")
         emit(args, {"action": "show", "kind": "perf", "label": args.label, "baseline": b})
         return 0
+    if args.action == "export":
+        return _baseline_export(args)
+    if args.action == "import":
+        return _baseline_import(args)
     if args.action == "clear":
         from metrics.store import tx
 
@@ -688,6 +695,57 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         emit(args, {"action": "clear", "kind": "perf", "label": args.label, "cleared": True})
         return 0
     return 2
+
+
+def _default_snapshot_path(label: str) -> Path:
+    return BASELINE_DIR / f"{label}.json"
+
+
+def _baseline_export(args: argparse.Namespace) -> int:
+    """把本机那条基线写成快照文件 —— 人做完这一步再 `git add` 提交。"""
+    snap = baseline.snapshot_of("perf", args.label, platform_info())
+    if snap is None:
+        print(f"没有 label={args.label} 的基线可导出（先跑一轮并用 --set-baseline 设定）",
+              file=sys.stderr)
+        return 2
+    path = Path(args.file) if args.file else _default_snapshot_path(args.label)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(baseline.dump(snap), encoding="utf-8")
+    print(f"[baseline] 已导出快照 {path}")
+    print(f"           run_id={snap['run_id']} set_at={snap['set_at']}")
+    m = snap["metrics"]
+    print(f"           p95={m.get('p95_ms')}ms p99={m.get('p99_ms')}ms rps={m.get('rps')}")
+    print("           ⚠ 请把该文件提交进仓库，CI 的 `baseline import` 才拿得到它；"
+          "CI 不会自己设基线")
+    emit(args, {"action": "export", "kind": "perf", "label": args.label,
+                "path": str(path), "snapshot": snap})
+    return 0
+
+
+def _baseline_import(args: argparse.Namespace) -> int:
+    """从快照文件恢复基线。任何一步不对都如实报错（退出码非 0），不猜着读。"""
+    path = Path(args.file) if args.file else _default_snapshot_path(args.label)
+    try:
+        snap = baseline.load_file(path)
+        baseline.apply(snap, expect_label=args.label)
+    except baseline.SnapshotError as exc:
+        print(f"[baseline] 导入失败：{exc}", file=sys.stderr)
+        print("[baseline] 基线没有恢复 —— 本轮 R3 会如实报「未设置基线」，"
+              "不会假装比过了。", file=sys.stderr)
+        return 2
+    print(f"[baseline] 已从 {path} 恢复基线 label={args.label} run_id={snap['run_id']}")
+    cfg = snap["config"]
+    print(f"           快照配置 items={cfg.get('items')} report_mode={cfg.get('report_mode')} "
+          f"step_users={cfg.get('step_users')}")
+    bake = snap.get("platform") or {}
+    if bake:
+        # 如实印出来由人判断，而不是替人判成"不可比"：
+        # 换机器绝对数字必然不同，那会把 CI 上的 R3 变成永久 SKIP。
+        print(f"           该基线量于 {bake.get('platform')} / {bake.get('cpu_count')} 核；"
+              f"本轮是本机 {platform_info().get('platform')} —— 机器不同时绝对值不可直接比")
+    emit(args, {"action": "import", "kind": "perf", "label": args.label,
+                "path": str(path), "run_id": snap["run_id"]})
+    return 0
 
 
 def _run_metrics(run_id: str) -> dict | None:
@@ -1067,9 +1125,11 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_probe)
 
     b = sub.add_parser("baseline", help="基线管理")
-    b.add_argument("action", choices=["set", "show", "clear"])
+    b.add_argument("action", choices=["set", "show", "export", "import", "clear"])
     b.add_argument("--label", required=True)
     b.add_argument("--run-id", default=None)
+    b.add_argument("--file", default=None,
+                   help="export/import 的快照文件，默认 baselines/<label>.json")
     add_json_flags(b)
     b.set_defaults(func=cmd_baseline)
 

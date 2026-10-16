@@ -356,13 +356,26 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
 
     # R3 相对基线的劣化 —— 这是本平台的核心价值：抓住"慢慢变慢"。
     if baseline is None:
+        # "没有基线"不是"比过了没劣化"。
+        #
+        # 这里原先写 passed=True 且不置 skipped，于是报告里长得像一条
+        # **通过的**规则：`[PASS] R3-baseline-degradation: 未设置基线…`。
+        # 后果是流水线上的 R3 一直是这个状态，而"跳过"与"比过了没劣化"
+        # 在报告里长得一模一样 —— 门禁的核心价值（抓"慢慢变慢"）
+        # 在 CI 里从未生效过，却没有任何人看得出来。
+        # 现在与 P0 / S1 的"无法判定"共用一套语义：skipped=True，标 [SKIP]，
+        # 看得见（不许静默消失），但不进 blocked（首次运行不该拦住任何人）。
         report.results.append(
             RuleResult(
                 rule_id="R3-baseline-degradation",
-                passed=True,
+                passed=False,
                 severity=WARNING,
+                skipped=True,
                 message="未设置基线，跳过劣化对比（首次运行请显式设置基线）",
-                action="运行 `python -m platform_cli baseline set ...` 建立基线。",
+                action="先跑一轮并显式设基线："
+                       "`python platform_cli.py run --label X --set-baseline`；"
+                       "再 `python platform_cli.py baseline export --label X` 把快照提交进仓库，"
+                       "CI 里的 `baseline import` 就能拿到它。",
             )
         )
     else:

@@ -191,7 +191,7 @@ def test_r3_skips_only_when_no_baseline_was_ever_set(tmp_path):
     line = _r3_line(proc.stdout)
 
     assert SKIPPED_MARK in line, f"没有基线时 R3 应当跳过，实际：{line}"
-    assert "[PASS]" in line, f"跳过是 WARNING 级、不拦人，实际：{line}"
+    assert "[SKIP]" in line, f"跳过必须标成 SKIP —— 标 [PASS] 会被读成「比过了没劣化」，实际：{line}"
     assert proc.returncode == 0, f"没有基线不该拦住构建，实际退出码 {proc.returncode}"
 
 

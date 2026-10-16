@@ -257,15 +257,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 基线从 artifacts 或独立存储恢复。
+      # 基线从**仓库里的快照文件**（`baselines/<label>.json`）恢复，不再用 artifact。
+      #
+      # 之前这里下载 artifact `quality-db-and-reports` —— 而那个 artifact 是
+      # **同一个 run 自己**的 platform-tests job 刚上传的（`if: always()`）。
+      # 跨 job 拿不到上一轮的库，`baselines` 表恒空，于是线上每一次 R3 都打印
+      # 「未设置基线，跳过劣化对比」：门禁的核心价值（抓"慢慢变慢"）
+      # 在 CI 里从来没生效过，而报告里那一行长得像"通过"。
+      #
       # 注意：**不要**在 CI 里自动把当前结果设成基线。
-      # 基线只能由人显式设置（`baseline set`），否则
-      # "慢慢变慢"会被每一轮自己批准 —— 门禁就失效了。
-      - name: 恢复基线
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: quality-db-and-reports
+      # 基线只能由人显式设置（`baseline set`），再 `baseline export` 出快照
+      # 提交进仓库 —— 谁在哪次提交里动了基线，`git log` 能回答。
+      # 否则"慢慢变慢"会被每一轮自己批准 —— 门禁就失效了。
+      #
+      # 导入失败（文件损坏 / 格式版本不认识）会让这一步退出码非 0：
+      # 一条读不对的基线必须吵闹，绝不能安静地放行。
+      - name: 恢复基线（人显式提交的快照）
+        run: |
+          if [ -f baselines/ci-perf.json ]; then
+            python platform_cli.py baseline import --label ci-perf
+          else
+            echo "::warning::没有 baselines/ci-perf.json —— 本轮 R3 未做对比（不是'比过了没劣化'）"
+            {
+              echo "## ⚠️ 本轮没有基线快照，R3 未做劣化对比"
+              echo ""
+              echo "门禁结果里 R3 会标 \`[SKIP]\`：**跳过**不等于**通过**。"
+              echo "基线只能由人显式设置（CI 不会自己设）："
+              echo ""
+              echo '```bash'
+              echo "python platform_cli.py run --label ci-perf --set-baseline"
+              echo "python platform_cli.py baseline export --label ci-perf   # 提交 baselines/ci-perf.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # 环境分层：CI 默认（不设 PERF_ENV）行为与引入分层之前逐字节一致，
       # 所以这里**不需要**设 PERF_ENV。要用档案时显式注入即可，

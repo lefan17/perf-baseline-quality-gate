@@ -14,6 +14,51 @@
 
 ## 未发布
 
+### 修复
+
+- **让 R3 在流水线上真的判过一次。**这个平台的核心价值是抓"慢慢变慢"，
+  而线上（run `38055102821`）每一次性能门禁的日志都是
+  `[PASS] R3-baseline-degradation: 未设置基线，跳过劣化对比` ——
+  门禁从未生效，报告却全绿。两个缺陷叠在一起：
+
+  1. 「恢复基线」步下载 artifact `quality-db-and-reports`，而它是**同一个
+     run 自己**的 `platform-tests` job 刚上传的（`if: always()`）——
+     跨 job 拿不到上一轮的库，`baselines` 表恒空。
+  2. R3 在 `baseline is None` 时写 `passed=True` 且不置 `skipped`，
+     于是"没判定"被打成 `[PASS]`，和"比过了、没劣化"长得一模一样。
+
+  修法：新增 `metrics/baseline.py` 与 `baseline export/import`，
+  基线以 `baselines/<label>.json` 快照的形式**提交进仓库**
+  （不需要 secret、不需要给 CI `contents: write`，且谁在哪次提交里动了
+  基线 `git log` 能回答）；`perf-gate` 在压测前 `baseline import`；
+  R3 无基线时改为 `passed=False` + `skipped=True` → `[SKIP]`，
+  与 P-13 的"不可比"、P0、S1 共用同一套语义。详见 `docs/已知问题.md` P-15。
+
+  既有断言同步更新：`test_missing_baseline_is_a_warning_not_a_block` →
+  `test_missing_baseline_is_a_skip_not_a_pass`；`test_r3_end_to_end.py` 里对
+  无基线那一行从断言 `[PASS]` 改成断言 `[SKIP]`。
+  **门禁阈值一个字没动。**
+
+- **`baseline export/import`**：把本机那条基线写成 `baselines/<label>.json`，
+  再由人提交进仓库 —— CI 的干净环境靠它拿到基线。快照带 `schema` 版本号，
+  读到不认识的版本**必须拒绝**（"猜着读"会安静地比出假的"没劣化"）；
+  缺文件 / 损坏 / label 不符 / 配置不可比四种边界都有确定行为，
+  **没有一种是安静放行**。CI 的「恢复基线」步因此不再需要 artifact，
+  也不再需要 `continue-on-error`。详见 `docs/已知问题.md` P-15。
+
+### 文档
+
+- 修正测试数与耗时的过期口径（实测，命令见 `CONTRIBUTING.md`）：
+  `135 passed / ~46s / ~50s` → **175 passed / 82s**；`README.md` 的用例表
+  从 6 行补到 9 行（新增 `test_r3_end_to_end.py` / `test_rules_single_source.py` /
+  `test_baseline_snapshot.py`，合计 175）；覆盖率双口径
+  `1829 stmts / 1043 miss / 43%` → **1950 / 1082 / 45%**，
+  `--cov=.` `2597 / 1046 / 60%` → **3110 / 1092 / 65%**。
+  `README.md` 的「GitHub runner 实测」表是**时点快照**，数字一个字没改。
+- `docs/度量口径.md`：`R3` 无基线时的描述从「PASS + WARNING」改为
+  「`[SKIP]` + WARNING，不是 PASS 也不是 FAIL」，并写清为什么
+  "跳过"必须在报告里长得和"通过"不一样。
+
 ### 新增（工程化外壳）
 
 一次补齐十项工程化能力，**不改业务逻辑、不改既有测试断言、不动任何门禁阈值**。
