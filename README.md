@@ -129,7 +129,7 @@
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（135 passed，约 46 秒）
+# 2. 跑平台自身的测试（175 passed，约 82 秒）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -185,6 +185,7 @@ $env:PYTHONIOENCODING="utf-8"
 | `suite` | 跑功能用例 → 入库 → 套件门禁（通过率 + flaky 预算） | 0/1 |
 | `flaky` | 列出摇摆用例（执行 ≥ 6 次才下结论） | 0/1 |
 | `baseline set/show/clear` | 基线管理（**只由显式命令写入**） | 0 |
+| `baseline export/import` | 基线快照出/入仓库（`baselines/<label>.json`）—— CI 靠它拿到人设的基线 | 0/2 |
 | `trend --label X` | 历史趋势 + 方向判断 | 0 |
 | `gate --run-id X` | 对已入库的 run 重跑门禁（改阈值后复盘的入口） | 0/1 |
 | `noise --rounds 5` | **量出本机的运行间波动**，用来定劣化容忍带（不自动改配置） | 0 |
@@ -222,6 +223,39 @@ GET /gate?run_id=perf-20261010-190550-f63da4
    runner 是干净环境，没有 `quality.db`，所以拿不到基线。
    这一步**故意不自动建基线**（见 `quality-gate.yml` 第 66-69 行注释）——
    否则"慢慢变慢"会被每一轮自己批准。
+
+> 上面这张表是 **run 38055102821 的时点快照**（2026-10-10），数字是那次日志的原文，
+> **不改**。它记下的那个缺陷（CI 里 R3 永远是"跳过"）已经修掉了：
+> 机制见下一节。
+
+### 基线怎么在没有数据库的 runner 上活下来
+
+CI 是干净环境，`quality.db` 是它自己从零建的。基线要跨过去，只能靠**仓库里的文件**：
+
+```powershell
+# 1. 人显式建基线（CI 永远不会替你干这件事）
+& ".\.venv\Scripts\python.exe" platform_cli.py run --label ci-perf --items 20000 `
+    --step-users 10 20 --step-duration 8 --set-baseline
+
+# 2. 导出成快照并提交 —— 谁在哪次提交里动了基线，git log 能回答
+& ".\.venv\Scripts\python.exe" platform_cli.py baseline export --label ci-perf
+git add baselines/ci-perf.json; git commit -m "chore(baseline): 重设 ci-perf 基线"
+```
+
+`quality-gate.yml` 的 `perf-gate` job 在跑压测**之前** `baseline import --label ci-perf`，
+于是 R3 真的做对比。三条边界都有确定行为，且**没有一条是"安静放行"**：
+
+| 情况 | 行为 |
+|---|---|
+| `baselines/ci-perf.json` 不存在 | 打 `::warning::` + 写 step summary，R3 报 `[SKIP]「未设置基线」`（**不是** 通过） |
+| 文件损坏 / 版本不认识 / label 不符 | `baseline import` 退出码 2，**这一步就红** —— 读不对的基线必须吵闹 |
+| 快照的配置与本轮不可比（items/并发/场景/报表实现不同） | R3 报 `[SKIP]「两轮配置不可比」`，不给劣化百分比 |
+
+**没选 artifact / 存储分支，理由**：`quality-db-and-reports` 由**同一个 run 自己**的
+`platform-tests` job 上传，跨 job 下载拿到的是本轮刚建的库（`baselines` 表恒空）——
+这正是原来的缺陷；存储分支则要求给 CI `contents: write`，等于给它一个"改基线"的能力，
+与"基线只能由人显式设置"直接冲突。快照文件走普通提交：不需要任何 secret，不需要额外权限，
+且改动留痕。
 
 ---
 
@@ -275,7 +309,7 @@ node_modules，是它最后没人维护的常见原因。
 |---|---|---|---|---|
 | `R1-error-rate` | blocking | 错误率 > 1% | 服务已经在报错 | `run`（性能门禁） |
 | `R2-p95-absolute` | blocking | P95 > 300 ms | 兜底线，防止基线本身已经烂了 | `run` |
-| `R3-baseline-degradation` | blocking | 相对基线劣化 > 10% | **慢慢变慢**（本平台核心价值）。两轮配置不可比（数据量/并发/场景/报表实现不同，或老基线没有配置快照）时以 `[SKIP]`（warning）出现，判定为"无法判定可比性"而**不给劣化百分比** | `run` |
+| `R3-baseline-degradation` | blocking | 相对基线劣化 > 10% | **慢慢变慢**（本平台核心价值）。**没有基线时以 `[SKIP]`（warning）出现** —— 「跳过」不是「通过」，不许长得像「比过了没劣化」；两轮配置不可比（数据量/并发/场景/报表实现不同，或老基线没有配置快照）时同样以 `[SKIP]` 出现，判定为"无法判定可比性"而**不给劣化百分比** | `run` |
 | `R4-sample-size` | warning | 样本 < 2000 | 用太少样本下结论 | `run` |
 | `R5-tail-jitter` | warning | P99/P95 > 4（同一梯度内配对计算） | 尾部抖动异常 | `run` |
 | `P0-probe-data-equivalence` | blocking | `agg` 与 `n1` 返回的数据不一致 | **两个实现语义不等价时，谁快谁慢没有意义**。取不到响应体或覆盖面不足时以 `[SKIP]`（warning）出现在报告里，判定为"无法判定"而不是"一致" | `probe`（N+1 缺陷探针） |
@@ -354,17 +388,21 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-135 passed in ~50s
+175 passed in ~82s
 ```
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
 | `test_engine.py` | 13 | 分位数算法（nearest-rank）、Runner、样本合并、场景 ID 范围 |
-| `test_platform.py` | 68 | 基线对比、拐点定位、flaky 分析、全部 12 条门禁规则、尾比口径、基线可比性 |
+| `test_platform.py` | 71 | 基线对比、拐点定位、flaky 分析、全部 12 条门禁规则、尾比口径、基线可比性 |
 | `test_sut_api.py` | 20 | 被测服务功能（含**两种实现数据一致性交叉校验**）+ 临时目录回收 |
 | `test_probes.py` | 3 | 性能缺陷探针（真实数据量 20 000） |
-| `test_cli.py` | 18 | CLI 解析器接线（每个子命令都绑定真实函数） |
+| `test_cli.py` | 19 | CLI 解析器接线（每个子命令都绑定真实函数；`baseline` 的 5 个 action 也是契约） |
 | `test_dashboard.py` | 13 | 看板渲染接线（折线真的被画出来，不是定义了没用）+ 汇总口径单一来源 |
+| `test_r3_end_to_end.py` | 2 | R3 端到端：真的压一轮、真的比基线、真的会变红（`sut` + `perf` 标记） |
+| `test_rules_single_source.py` | 10 | 阈值只有一个住址（`gate_rules.yaml`），改 YAML 真的会改判定 |
+| `test_baseline_snapshot.py` | 24 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 |
+| **合计** | **175** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -547,15 +585,15 @@ profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相
 
 | 口径 | 命令 | 实测 |
 |---|---|---|
-| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **1829 stmts / 1043 miss / 43%** |
-| 含 `tests/` 自身 | `--cov=.` | 2597 stmts / 1046 miss / 60% |
+| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **1950 stmts / 1082 miss / 45%** |
+| 含 `tests/` 自身 | `--cov=.` | 3110 stmts / 1092 miss / 65% |
 
 **门槛取 40**，理由：
 
-- 低于实测 43，留 4 个点余量 —— 门槛贴着实测值时，任何一次无关改动
+- 低于实测 44，留 4 个点余量 —— 门槛贴着实测值时，任何一次无关改动
   都会让 CI 变红，而"稳定变红的门槛"唯一的结局是所有人学会忽略它；
-- 也不取 30 以下 —— 那对一个 43% 的仓库存量等于没有门槛；
-- README §6 引用的 **60%** 是另一个口径，**不要拿它和 40 比**，
+- 也不取 30 以下 —— 那对一个 44% 的仓库存量等于没有门槛；
+- README §6 引用的 **65%** 是另一个口径，**不要拿它和 40 比**，
   那等于拿"含自学题在内的高分"去比"专业课及格线"。
 
 已知盲区（**不假装它们不存在**）：
@@ -564,7 +602,7 @@ profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相
 |---|---:|---|
 | `sut/app.py`、`sut/db.py`、`sut/seed.py` | **0%** | SUT 跑在**子进程**里，coverage 默认不追踪子进程 |
 | `metrics/pytest_plugin.py` | **0%** | 只在 `suite` 子命令起的 pytest 子进程里被加载 |
-| `platform_cli.py` | **24%** | 压测主路径（`run` / `noise` / `prune`）要真起服务，用例只覆盖参数解析与纯函数 |
+| `platform_cli.py` | **23%** | 压测主路径（`run` / `noise` / `prune`）要真起服务，用例只覆盖参数解析与纯函数 |
 | `metrics/store.py` | **100%** | — |
 | `sut/server_ctl.py` | **81%** | — |
 

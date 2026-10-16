@@ -14,7 +14,7 @@ python -m venv .venv
 
 # 2. 一键脚本（把下面几条命令都包好了）
 pwsh -File scripts\run.ps1 -Task help
-pwsh -File scripts\run.ps1 -Task test      # 跑 135 条用例
+pwsh -File scripts\run.ps1 -Task test      # 跑 175 条用例
 pwsh -File scripts\run.ps1 -Task lint      # ruff + mypy + 依赖一致性
 pwsh -File scripts\run.ps1 -Task perf      # 一轮真压测 + 门禁（约 1 分钟）
 
@@ -62,14 +62,14 @@ README 里每一个数字都是实测的。改文档时：
 - 已存在的数字**不许改**，除非你自己重跑并给出新输出；
 - 尤其是这些**有论证的**数字，改动要先读懂它们的论证：
   - `gate_rules.yaml` 的 `slow_report_p95_ms_max: 150.0` / `n1_over_agg_max: 10.0`
-  - README 里的 2.27σ 容忍带论证、7.81× 比值、135 passed、12 条门禁规则
+  - README 里的 2.27σ 容忍带论证、7.81× 比值、175 passed、12 条门禁规则
 
 ---
 
 ## 三、测试纪律
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 135 passed，约 46 秒
+& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 175 passed，约 82 秒
 ```
 
 - **不许删测试或改断言**来让门槛达标。门槛是为了暴露问题，不是为了通过。
@@ -90,9 +90,9 @@ README 里每一个数字都是实测的。改文档时：
     --cov-report=term-missing --cov-fail-under=40
 ```
 
-- 门槛 40 对应的是**只算业务代码**的口径（实测 43%）。
-- README §6 引用的 **60%** 是另一个口径（`--cov=.`，含 `tests/`）。
-  两个数都对，但它们回答的不是同一个问题 —— **不要拿 60% 去和 40 比较**，
+- 门槛 40 对应的是**只算业务代码**的口径（实测 44%）。
+- README §6 引用的 **65%** 是另一个口径（`--cov=.`，含 `tests/`）。
+  两个数都对，但它们回答的不是同一个问题 —— **不要拿 65% 去和 40 比较**，
   那是拿"含自学题在内的高分"去比"专业课及格线"。
 - ⚠️ 写 `--cov` 时必须重复写多个 `--cov=xxx`，**不能**写 `--cov=a,b`：
   本版本（pytest-cov 7.1.0）下逗号写法**静默收集不到数据**，报告出 0% 而不是报错。
@@ -103,7 +103,7 @@ README 里每一个数字都是实测的。改文档时：
 |---|---:|---|
 | `sut/app.py` / `sut/db.py` / `sut/seed.py` | 0% | SUT 跑在**子进程**里，coverage 默认不追踪子进程 |
 | `metrics/pytest_plugin.py` | 0% | 只在 `suite` 子命令起的 pytest 子进程里被加载 |
-| `platform_cli.py` | 24% | 压测主路径（`cmd_run` / `cmd_noise` / `cmd_prune`）要真起服务，用例里只覆盖了参数解析与若干纯函数 |
+| `platform_cli.py` | 23% | 压测主路径（`cmd_run` / `cmd_noise` / `cmd_prune`）要真起服务，用例里只覆盖了参数解析与若干纯函数 |
 
 **提高覆盖率不是目标本身。** 把 `sut/*` 从 0% 拉起来需要
 `coverage run --parallel-mode` 之类的子进程追踪方案，
