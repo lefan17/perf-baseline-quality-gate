@@ -11,6 +11,13 @@
 2. **变慢了没有？和谁比？** —— 基线显式建立，劣化按容忍带判定。
 3. **门禁真的能拦住吗？** —— 内置**故意保留的性能缺陷**，探针反复证明门禁会红。
 
+> 🧭 **在作品集中的位置**：这条测试 / 质量线上的**第二段**。起点是
+> [fullstack-test-framework](https://github.com/lefan17/fullstack-test-framework)——接口 + UI + 业务全链路
+> 自动化测试框架（pytest + FastAPI + Playwright + Allure + CI），解决"执行与断言"；本仓库在它后面，
+> 解决"执行完之后的判断"：把性能与稳定性量化成基线，再把判断固化成 CI 门禁。第三段是
+> [agent-test-hub](https://github.com/lefan17/agent-test-hub)——Agent 自动测试系统（LangGraph + LLM
+> 编排，从 OpenAPI 契约生成用例、执行、重试与缺陷归因）：接口自动化 → 性能与质量门禁 → Agent 自动测试。
+
 ---
 
 ## 一、先说结论：这个平台抓到了什么
