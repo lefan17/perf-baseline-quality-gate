@@ -691,8 +691,8 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 | 模块 | 豁免的错误码 | 站点 |
 |---|---|---|
 | `metrics.gate` | `assignment` | `gate.py:297` |
-| `metrics.analysis` | `union-attr` | `analysis.py:575` |
-| `dashboard.app` | `arg-type` | `app.py:136` |
+| `metrics.analysis` | `union-attr` | `analysis.py:653` |
+| `dashboard.app` | `arg-type` | `app.py:41` |
 | `sut.server_ctl` | `attr-defined` | `server_ctl.py:66` |
 | `platform_cli` | `assignment` | `platform_cli.py`（`rows_by_mode` 容空语义） |
 
