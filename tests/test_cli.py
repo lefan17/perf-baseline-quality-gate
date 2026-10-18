@@ -49,10 +49,7 @@ class TestParserWiring:
         压根没设上"（set_defaults 漏了一行）。
         """
         parser = platform_cli.build_parser()
-        subs = [
-            a for a in parser._actions
-            if isinstance(a, argparse._SubParsersAction)
-        ]
+        subs = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
         assert subs, "解析器必须注册子命令"
 
         broken = []
@@ -66,12 +63,9 @@ class TestParserWiring:
     def test_expected_subcommands_exist(self):
         """子命令集合是稳定的契约 —— CI 脚本按名字调用它们。"""
         parser = platform_cli.build_parser()
-        action = next(
-            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
-        )
+        action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         names = set(action.choices)
-        expected = {"run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise",
-                    "prune", "serve"}
+        expected = {"run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "prune", "serve"}
         missing = expected - names
         assert not missing, f"缺少子命令：{missing}"
 
@@ -84,9 +78,7 @@ class TestParserWiring:
         而失败长什么样取决于 shell，很容易被后人当成"flaky"关掉。
         """
         parser = platform_cli.build_parser()
-        action = next(
-            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
-        )
+        action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         baseline_parser = action.choices["baseline"]
         choices = next(a.choices for a in baseline_parser._actions if a.dest == "action")
         expected = {"set", "show", "export", "import", "clear"}
@@ -126,10 +118,28 @@ class TestHelpers:
         不会因为合并方式把劣化抹平。
         """
         rows = [
-            {"total": 100, "error_count": 0, "rps": 50.0, "mean_ms": 10.0,
-             "p50_ms": 8.0, "p90_ms": 12.0, "p95_ms": 15.0, "p99_ms": 20.0, "max_ms": 30.0},
-            {"total": 300, "error_count": 3, "rps": 40.0, "mean_ms": 20.0,
-             "p50_ms": 18.0, "p90_ms": 30.0, "p95_ms": 90.0, "p99_ms": 120.0, "max_ms": 200.0},
+            {
+                "total": 100,
+                "error_count": 0,
+                "rps": 50.0,
+                "mean_ms": 10.0,
+                "p50_ms": 8.0,
+                "p90_ms": 12.0,
+                "p95_ms": 15.0,
+                "p99_ms": 20.0,
+                "max_ms": 30.0,
+            },
+            {
+                "total": 300,
+                "error_count": 3,
+                "rps": 40.0,
+                "mean_ms": 20.0,
+                "p50_ms": 18.0,
+                "p90_ms": 30.0,
+                "p95_ms": 90.0,
+                "p99_ms": 120.0,
+                "max_ms": 200.0,
+            },
         ]
         merged = platform_cli._merge_from_rows(rows)
         assert merged["total"] == 400
@@ -161,27 +171,65 @@ class TestHelpers:
         否则这条用例即使实现是错的也会通过（两数相同则相加=平均）。
         """
         rows = [
-            {"total": 1000, "duration_s": 10.0, "error_count": 0, "rps": 370.0,
-             "mean_ms": 10.0, "p50_ms": 8.0, "p90_ms": 12.0, "p95_ms": 15.0,
-             "p99_ms": 20.0, "max_ms": 30.0},
-            {"total": 500, "duration_s": 5.0, "error_count": 0, "rps": 200.0,
-             "mean_ms": 20.0, "p50_ms": 18.0, "p90_ms": 30.0, "p95_ms": 90.0,
-             "p99_ms": 120.0, "max_ms": 200.0},
+            {
+                "total": 1000,
+                "duration_s": 10.0,
+                "error_count": 0,
+                "rps": 370.0,
+                "mean_ms": 10.0,
+                "p50_ms": 8.0,
+                "p90_ms": 12.0,
+                "p95_ms": 15.0,
+                "p99_ms": 20.0,
+                "max_ms": 30.0,
+            },
+            {
+                "total": 500,
+                "duration_s": 5.0,
+                "error_count": 0,
+                "rps": 200.0,
+                "mean_ms": 20.0,
+                "p50_ms": 18.0,
+                "p90_ms": 30.0,
+                "p95_ms": 90.0,
+                "p99_ms": 120.0,
+                "max_ms": 200.0,
+            },
         ]
         assert rows[0]["rps"] != rows[1]["rps"], "被加数必须不同，否则测不出相加的错误"
         merged = platform_cli._merge_from_rows(rows)
-        assert merged["rps"] == pytest.approx(1500 / 15.0)   # = 100.0
+        assert merged["rps"] == pytest.approx(1500 / 15.0)  # = 100.0
         assert merged["rps"] != pytest.approx(570.0), "各梯度 RPS 被相加了"
 
     def test_merge_from_rows_keeps_worst_percentile_and_duration(self):
         """分位数取最差一级；时长累加（RPS 的分母）。"""
         rows = [
-            {"total": 100, "duration_s": 4.0, "error_count": 0, "rps": 25.0,
-             "mean_ms": 10.0, "p50_ms": 8.0, "p90_ms": 12.0, "p95_ms": 15.0,
-             "p99_ms": 20.0, "max_ms": 30.0, "max_inflight": 8},
-            {"total": 300, "duration_s": 6.0, "error_count": 0, "rps": 50.0,
-             "mean_ms": 20.0, "p50_ms": 18.0, "p90_ms": 30.0, "p95_ms": 90.0,
-             "p99_ms": 120.0, "max_ms": 200.0, "max_inflight": 19},
+            {
+                "total": 100,
+                "duration_s": 4.0,
+                "error_count": 0,
+                "rps": 25.0,
+                "mean_ms": 10.0,
+                "p50_ms": 8.0,
+                "p90_ms": 12.0,
+                "p95_ms": 15.0,
+                "p99_ms": 20.0,
+                "max_ms": 30.0,
+                "max_inflight": 8,
+            },
+            {
+                "total": 300,
+                "duration_s": 6.0,
+                "error_count": 0,
+                "rps": 50.0,
+                "mean_ms": 20.0,
+                "p50_ms": 18.0,
+                "p90_ms": 30.0,
+                "p95_ms": 90.0,
+                "p99_ms": 120.0,
+                "max_ms": 200.0,
+                "max_inflight": 19,
+            },
         ]
         merged = platform_cli._merge_from_rows(rows)
         assert merged["duration_s"] == pytest.approx(10.0)

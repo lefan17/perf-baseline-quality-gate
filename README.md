@@ -1,9 +1,16 @@
 # 性能与稳定性基线平台 · 质量度量与 CI 门禁平台
 
 [![quality-gate](https://github.com/lefan17/perf-baseline-quality-gate/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/lefan17/perf-baseline-quality-gate/actions/workflows/quality-gate.yml)
+[![在线看板](https://img.shields.io/badge/在线看板-gh--pages-blue)](https://lefan17.github.io/perf-baseline-quality-gate/)
 
 一个**自己压、自己判、自己拦**的性能质量平台：内置被测服务、自研压测引擎、
 结果入库、基线劣化对比、flaky 识别、门禁规则引擎、看板与 CI 集成。
+
+**在线看板**：<https://lefan17.github.io/perf-baseline-quality-gate/> ——
+CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，断网也能看
+（不调 API、不加载 CDN）。趋势图会带上历史轮次：CI 是全新检出，库里只有本轮
+那几行，所以发布前会先把 `gh-pages` 上的 `history.db` 取下来合并
+（`platform_cli.py report --merge-db`），否则"趋势"永远只有一个点。
 
 它不是"跑个 Locust 出张图"，而是回答三个具体问题：
 
@@ -190,6 +197,7 @@ $env:PYTHONIOENCODING="utf-8"
 | `gate --run-id X` | 对已入库的 run 重跑门禁（改阈值后复盘的入口） | 0/1 |
 | `noise --rounds 5` | **量出本机的运行间波动**，用来定劣化容忍带（不自动改配置） | 0 |
 | `serve` | 起看板（含 `/gate` JSON API） | 0 |
+| `report --out DIR [--merge-db 旧库]` | 把看板导出成**一页自包含 HTML**（给 GitHub Pages 用），可先并入历史库 | 0 |
 | `env` | 显示当前环境档案（`PERF_ENV`）与生效变量 | 0 |
 
 CI 可以直接调看板的结构化判定，不用解析 stdout：
@@ -227,6 +235,44 @@ GET /gate?run_id=perf-20261010-190550-f63da4
 > 上面这张表是 **run 38055102821 的时点快照**（2026-10-10），数字是那次日志的原文，
 > **不改**。它记下的那个缺陷（CI 里 R3 永远是"跳过"）已经修掉了：
 > 机制见下一节。
+
+### 在线看板：把 `serve` 看到的页面变成一页静态 HTML
+
+本地看板是 FastAPI 起的（`platform_cli.py serve`），只在本机看得到。审阅者
+不会 clone 下来跑压测，于是"有看板"这件事在仓库外面等于不存在。所以加了一个
+`report` 子命令，把**同一个渲染函数**的结果写成一个自包含的 `index.html`，
+CI 每轮推到 `gh-pages`。
+
+三个刻意的决定：
+
+1. **复用 `dashboard.app._render()`，不另写一套**。线上看板与本地 `serve`
+   必须是同一份代码渲染的，否则会出现"两边说法不一致"这种最难查的分裂
+   （本地 P95 是绿的、页面上是红的，谁对？）。
+2. **带历史库来合并**。CI 每轮都是全新检出，`quality.db` 里只有本轮那几行，
+   趋势图会永远只有一个点 —— 一个画不出趋势的趋势图等于没有。所以发布前
+   先把 `gh-pages` 上的 `history.db` 取下来，`report --merge-db` 并进去
+   （只补本地没有的轮次，同 `run_id` 以本地为准），再把合并后的库推回去。
+   合并**幂等**：同一份库合两次，第二次是 0 轮。
+3. **一页、不调 API、不引 CDN**。静态快照在断网、内网、邮件附件里都得能看。
+   页面上的时间戳与"数据源"写在标题下方，且**不写本机绝对路径** ——
+   静态页会被公开，`db: D:\...\quality.db` 是泄漏。
+
+```powershell
+# 本地试一下（先跑过一轮 run，库里才有数据）
+& ".\.venv\Scripts\python.exe" platform_cli.py report --out reports/dashboard
+
+# CI 里带上历史
+& ".\.venv\Scripts\python.exe" platform_cli.py report --out reports/dashboard --merge-db .history/history.db
+```
+
+空库也会出一页（各区块显示"还没有"）—— 空页面不是错误，但它是最容易被
+误读成"发布失败"的状态，所以 CLI 会额外打印一行说明。
+
+> CI 的 `pages` job 在 `perf-gate` 之后跑，且 `if: always()`：
+> **门禁红了才更需要看板**（"这次为什么红了"、"是慢慢变慢还是突然崩"），
+> 默认的 `needs` 语义会让看板在出事的时候停止更新，正好和它存在的目的相反。
+> 但 `platform-tests` 跳过时不发布 —— 那时 `perf-gate` 根本没跑，库里没有
+> 本轮数据，发出去会让人误以为这一轮是绿的。
 
 ### 基线怎么在没有数据库的 runner 上活下来
 
@@ -681,6 +727,16 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 定 88 会产出上百条与"代码对不对"无关的噪声。剩下 3 条超出者全部落在
 `metrics/analysis.py` 与 `metrics/store.py`（本次不动业务代码），
 因此 `E501` 不进 select，并如实记在这里。
+
+**`ruff format --check` 从「只报告」改成阻塞项（2026-10-18）**：这条检查原先在 CI 里
+带 `continue-on-error: true`，理由是"先不逼着改格式"。实测这句理由站不住——只报告的
+格式检查等于没有格式检查，没人会因为一条黄色警告去改空白。当天在本机跑了
+`ruff format .`，**17 个文件被重排、21 个已合规**，重排后 `ruff format --check .`
+是 **38 files already formatted**，`pytest tests/ -q` 仍是 180 passed、
+`mypy` 仍是 16 source files 零问题。既然存量已经清零，就没有理由再让它非阻塞：
+现在这一步与 `ruff check .`、`mypy` 一样是**阻塞项**，与
+`fullstack-test-framework` 的 `lint` job 同一口径。改动基本落在换行与缩进
+（`platform_cli.py` 231/201 行最多），不涉及任何判定逻辑。
 
 **mypy**：加 `--explicit-package-bases` 后全仓真实错误 **5 个**，
 分布在 5 个文件；不加这个 flag 会直接报

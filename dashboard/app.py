@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -77,8 +78,7 @@ def api_run(run_id: str) -> JSONResponse:
 
 
 @app.get("/api/trend")
-def api_trend(label: str, limit: int = 20, kind: str | None = None,
-              rules: str | None = None) -> dict:
+def api_trend(label: str, limit: int = 20, kind: str | None = None, rules: str | None = None) -> dict:
     """趋势序列：给看板画线，也给外部系统取数。
 
     `kind` 默认不过滤 —— 早先这里写死了 `kind="perf"`，导致
@@ -112,12 +112,8 @@ def api_trend(label: str, limit: int = 20, kind: str | None = None,
     return {
         "label": label,
         "points": points,
-        "p95_direction": analysis.moving_direction(
-            [p["p95_ms"] for p in points if p["p95_ms"]], rules=loaded_rules
-        ),
-        "rps_direction": analysis.moving_direction(
-            [p["rps"] for p in points if p["rps"]], rules=loaded_rules
-        ),
+        "p95_direction": analysis.moving_direction([p["p95_ms"] for p in points if p["p95_ms"]], rules=loaded_rules),
+        "rps_direction": analysis.moving_direction([p["rps"] for p in points if p["rps"]], rules=loaded_rules),
         "tolerance_pct": analysis.tolerance_from_rules(loaded_rules)[0],
         "baseline": store.get_baseline(baseline_kind, label),
     }
@@ -136,8 +132,7 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
         return {"run_id": run_id, "error": "no steps", "blocked": True}
     merged = _merge([dict(r) for r in rows])
     with store.tx() as conn:
-        row = conn.execute("SELECT kind, label, config_json FROM runs WHERE run_id=?",
-                           (run_id,)).fetchone()
+        row = conn.execute("SELECT kind, label, config_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
     label = row["label"] if row else ""
     run_config = json.loads(row["config_json"] or "{}") if row else {}
     baseline = store.get_baseline("perf", label) if row and row["kind"] in ("perf", "probe") else None
@@ -153,10 +148,7 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
     loaded_rules = _load_rules(rules)
     deltas = analysis.compare_to_baseline(merged, baseline["metrics"], loaded_rules) if baseline else []
     # 可比性也走单点：口径不同时不报劣化百分比，而是把 R3 标成 SKIP。
-    comparability = (
-        analysis.check_comparability(run_config, baseline.get("config"), loaded_rules)
-        if baseline else None
-    )
+    comparability = analysis.check_comparability(run_config, baseline.get("config"), loaded_rules) if baseline else None
     report = gate.evaluate_perf(merged, baseline, deltas, loaded_rules, comparability)
     return {
         "run_id": run_id,
@@ -191,14 +183,63 @@ def page(rules: str | None = None) -> str:
         home=store.recent_runs(limit=25),
         flaky=[
             v
-            for v in (
-                analysis.analyze_flaky(store.cases_for_node(n), n, loaded_rules)
-                for n in store.all_nodeids()
-            )
+            for v in (analysis.analyze_flaky(store.cases_for_node(n), n, loaded_rules) for n in store.all_nodeids())
             if v.flaky
         ],
         rules=loaded_rules,
     )
+
+
+# --------------------------------------------------------------------------- #
+# 静态导出：把看板变成一个可以放进 GitHub Pages 的文件
+# --------------------------------------------------------------------------- #
+def render_snapshot(
+    out_dir: Path,
+    limit: int = 25,
+    rules: str | None = None,
+    generated_at: str | None = None,
+) -> dict:
+    """把当前库渲染成一份自包含的静态 HTML，写进 `out_dir/index.html`。
+
+    ## 为什么需要它
+
+    看板此前只能 `serve` 起来看 —— 也就是说，**只有已经克隆了仓库、装好了
+    依赖、且手里有那个 quality.db 的人才能看见它**。而"看板要有人看"
+    正是这个模块存在的前提（见文件头）。一个必须自己起服务才能看的看板，
+    受众永远是作者本人。
+
+    静态导出的取舍很明确：
+
+    * **不做前端换页**：只出一页 `index.html`，内含最近运行、趋势折线、
+      当前基线、flaky 清单。多页意味着状态、路由和构建链，而这三样正是
+      内部看板烂尾的常见原因（本模块文件头已经写过一次同样的判断）。
+    * **不内嵌数据、不调 API**：导出的 HTML 里没有任何 `fetch`，
+      断网也能看，也不会因为 Pages 上没有后端而变成一片空白。
+    * **不隐藏空状态**：库里没有数据时照样出页面，只是各区块显示"还没有"。
+      空白页会让人以为发布失败，而"还没有数据"是明确的信息。
+
+    返回一份摘要（写出的文件、条目数），供 CI 打日志用。
+    """
+    loaded_rules = _load_rules(rules)
+    home = store.recent_runs(limit=limit)
+    flaky = [
+        v
+        for v in (analysis.analyze_flaky(store.cases_for_node(n), n, loaded_rules) for n in store.all_nodeids())
+        if v.flaky
+    ]
+    stamp = generated_at or datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+    html = _render(home=home, flaky=flaky, rules=loaded_rules, snapshot_at=stamp)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    index = out_dir / "index.html"
+    index.write_text(html, encoding="utf-8")
+    return {
+        "index": str(index),
+        "bytes": len(html.encode("utf-8")),
+        "runs": len(home),
+        "flaky": len(flaky),
+        "generated_at": stamp,
+    }
 
 
 def _metrics_of(run_id: str) -> dict:
@@ -255,17 +296,22 @@ def _sparkline(values: list[float], width: int = 160, height: int = 36) -> str:
     )
 
 
-def _render(home: list[dict], flaky: list, rules: dict | None = None) -> str:
+def _render(home: list[dict], flaky: list, rules: dict | None = None, snapshot_at: str | None = None) -> str:
     # rules 缺省时不读文件系统：moving_direction 与下面那句文案都会回落到
     # 模块常量，而模块常量与 YAML 当前默认值一致，渲染结果逐字节相同。
     tol_pct = analysis.tolerance_from_rules(rules)[0]
+    # 静态快照必须把本地绝对路径换掉：那是生成者机器上的路径，
+    # 对读的人没有信息量，却会泄漏一点点本机目录结构。
+    meta_line = (
+        f"静态快照 · 生成于 {snapshot_at} · 数据源 quality.db（CI 本轮）" if snapshot_at else f"db: {store.db_path()}"
+    )
     rows_html = []
     for r in home:
         m = _metrics_of(r["run_id"])
         badge = "ok" if r["status"] == "passed" else ("bad" if r["status"] == "failed" else "warn")
         rows_html.append(
             f'<tr><td class="mono">{r["run_id"]}</td>'
-            f'<td>{r["kind"]}</td><td>{r["label"]}</td>'
+            f"<td>{r['kind']}</td><td>{r['label']}</td>"
             f'<td><span class="badge {badge}">{r["status"]}</span></td>'
             f'<td class="num">{m.get("p95_ms", 0):.1f}</td>'
             f'<td class="num">{m.get("p99_ms", 0):.1f}</td>'
@@ -308,11 +354,14 @@ def _render(home: list[dict], flaky: list, rules: dict | None = None) -> str:
         '<p class="muted">还没有足够的运行历史画趋势（同一个 label 至少 2 轮）。</p>'
     )
 
-    flaky_html = "".join(
-        f'<li><span class="mono">{v.nodeid}</span> — {v.passed}P/{v.failed}F，'
-        f"稳定度 {v.stability:.0%}，{v.note}</li>"
-        for v in flaky
-    ) or '<li class="muted">没有达到 flaky 判定的用例（需要 ≥6 次执行且结果摇摆）</li>'
+    flaky_html = (
+        "".join(
+            f'<li><span class="mono">{v.nodeid}</span> — {v.passed}P/{v.failed}F，'
+            f"稳定度 {v.stability:.0%}，{v.note}</li>"
+            for v in flaky
+        )
+        or '<li class="muted">没有达到 flaky 判定的用例（需要 ≥6 次执行且结果摇摆）</li>'
+    )
 
     baselines = []
     with store.tx() as conn:
@@ -325,7 +374,7 @@ def _render(home: list[dict], flaky: list, rules: dict | None = None) -> str:
             )
             baselines.append(
                 f'<li><span class="mono">{b["kind"]}/{b["label"]}</span> → {b["run_id"]}，'
-                f'P95 {bm.get("p95_ms", 0):.1f}ms，RPS {bm.get("rps", 0):.1f}，'
+                f"P95 {bm.get('p95_ms', 0):.1f}ms，RPS {bm.get('rps', 0):.1f}，"
                 f'<span class="muted">set {b["set_at"][:19]}</span></li>'
             )
     baseline_html = "".join(baselines) or (
@@ -358,12 +407,12 @@ def _render(home: list[dict], flaky: list, rules: dict | None = None) -> str:
  code {{ background:#161b22; padding:1px 5px; border-radius:4px; font-size:12px; }}
 </style></head><body>
 <h1>性能基线 · 质量门禁看板</h1>
-<p class="muted mono">db: {store.db_path()}</p>
+<p class="muted mono">{meta_line}</p>
 
 <h2>最近运行</h2>
 <table><thead><tr><th>run_id</th><th>类型</th><th>标签</th><th>状态</th>
 <th>P95(ms)</th><th>P99(ms)</th><th>RPS</th><th>错误率</th><th>开始时间</th></tr></thead>
-<tbody>{''.join(rows_html) or '<tr><td colspan="9" class="muted">还没有运行记录</td></tr>'}</tbody></table>
+<tbody>{"".join(rows_html) or '<tr><td colspan="9" class="muted">还没有运行记录</td></tr>'}</tbody></table>
 
 <h2>P95 趋势</h2>
 {trend_section}

@@ -71,9 +71,7 @@ class TestCompareMetric:
         这里守住的下限是"至少能吸收 `noise` 命令量到的那种波动"
         （实测单轮最大偏离均值 4.95%，取整 5%）。
         """
-        assert analysis.DEGRADATION_TOLERANCE >= 0.05, (
-            "容忍带小于实测噪声量级（4.95%），会稳定产生假阳性"
-        )
+        assert analysis.DEGRADATION_TOLERANCE >= 0.05, "容忍带小于实测噪声量级（4.95%），会稳定产生假阳性"
 
 
 class TestCompareToBaseline:
@@ -142,7 +140,7 @@ class TestBaselineComparability:
         assert any("并发" in r for r in v.reasons)
 
     def test_missing_baseline_config_is_unknown_not_ok(self):
-        """"老基线没记配置"是"无法判定"，不是"没问题"。"""
+        """ "老基线没记配置"是"无法判定"，不是"没问题"。"""
         v = analysis.check_comparability({"items": 20000}, {})
         assert v.verdict == "unknown"
 
@@ -160,7 +158,9 @@ class TestBaselineComparability:
         report = gate.evaluate_perf(
             _perf_run(p95_ms=140.0),
             {"metrics": {"p95_ms": 100.0}, "config": baseline_cfg},
-            deltas, RULES, comparability,
+            deltas,
+            RULES,
+            comparability,
         )
         r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
         assert r3.skipped and not r3.passed
@@ -178,7 +178,9 @@ class TestBaselineComparability:
         report = gate.evaluate_perf(
             _perf_run(p95_ms=140.0),
             {"metrics": {"p95_ms": 100.0}, "config": cfg},
-            deltas, RULES, analysis.check_comparability(cfg, dict(cfg)),
+            deltas,
+            RULES,
+            analysis.check_comparability(cfg, dict(cfg)),
         )
         r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
         assert not r3.skipped and not r3.passed
@@ -285,9 +287,7 @@ class TestFindKnee:
 # flaky
 # --------------------------------------------------------------------------- #
 def _hist(n_pass: int, n_fail: int) -> list[dict]:
-    return [{"outcome": "passed", "duration_s": 0.1}] * n_pass + [
-        {"outcome": "failed", "duration_s": 0.2}
-    ] * n_fail
+    return [{"outcome": "passed", "duration_s": 0.1}] * n_pass + [{"outcome": "failed", "duration_s": 0.2}] * n_fail
 
 
 class TestAnalyzeFlaky:
@@ -351,24 +351,31 @@ class TestTrend:
 # 门禁
 # --------------------------------------------------------------------------- #
 RULES = {
-    "perf": {"thresholds": {"error_rate_max": 0.01, "p95_ms_max": 300.0,
-                            "min_total_requests": 2000, "p99_over_p95_max": 4.0}},
+    "perf": {
+        "thresholds": {"error_rate_max": 0.01, "p95_ms_max": 300.0, "min_total_requests": 2000, "p99_over_p95_max": 4.0}
+    },
     "probe": {"slow_report_p95_ms_max": 150.0, "n1_over_agg_max": 10.0},
     "suite": {"min_pass_rate": 1.0, "max_flaky_cases": 2},
 }
 
 
 def _perf_run(**over):
-    base = {"error_rate": 0.0, "p95_ms": 50.0, "p99_ms": 80.0, "total": 5000, "rps": 100.0,
-            "mean_ms": 20.0, "max_ms": 200.0}
+    base = {
+        "error_rate": 0.0,
+        "p95_ms": 50.0,
+        "p99_ms": 80.0,
+        "total": 5000,
+        "rps": 100.0,
+        "mean_ms": 20.0,
+        "max_ms": 200.0,
+    }
     base.update(over)
     return base
 
 
 class TestPerfGate:
     def test_clean_run_passes(self):
-        report = gate.evaluate_perf(_perf_run(), {"metrics": {"p95_ms": 50.0, "rps": 100.0}},
-                                    [], RULES)
+        report = gate.evaluate_perf(_perf_run(), {"metrics": {"p95_ms": 50.0, "rps": 100.0}}, [], RULES)
         assert not report.blocked
 
     def test_error_rate_blocks(self):
@@ -398,8 +405,7 @@ class TestPerfGate:
 
     def test_degradation_blocks(self):
         deltas = analysis.compare_to_baseline({"p95_ms": 200.0}, {"p95_ms": 100.0})
-        report = gate.evaluate_perf(_perf_run(p95_ms=200.0), {"metrics": {"p95_ms": 100.0}},
-                                    deltas, RULES)
+        report = gate.evaluate_perf(_perf_run(p95_ms=200.0), {"metrics": {"p95_ms": 100.0}}, deltas, RULES)
         assert report.blocked
 
     def test_advisory_keeps_the_verdict_but_drops_blocking(self):
@@ -409,8 +415,9 @@ class TestPerfGate:
         百分比，`report.failed` 里仍有这条。区别只在 severity 与 blocked。
         """
         deltas = analysis.compare_to_baseline({"p95_ms": 200.0}, {"p95_ms": 100.0})
-        report = gate.evaluate_perf(_perf_run(p95_ms=200.0), {"metrics": {"p95_ms": 100.0}},
-                                    deltas, RULES, r3_advisory=True)
+        report = gate.evaluate_perf(
+            _perf_run(p95_ms=200.0), {"metrics": {"p95_ms": 100.0}}, deltas, RULES, r3_advisory=True
+        )
         r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
         assert not r3.passed, "只报数不等于判定通过"
         assert r3.severity == gate.WARNING
@@ -421,15 +428,15 @@ class TestPerfGate:
 
     def test_advisory_does_not_change_absolute_thresholds(self):
         """只报数模式**不放宽任何阈值**：R1/R2 该拦还是拦。"""
-        report = gate.evaluate_perf(_perf_run(error_rate=0.05, p95_ms=9999.0), None, [], RULES,
-                                    r3_advisory=True)
+        report = gate.evaluate_perf(_perf_run(error_rate=0.05, p95_ms=9999.0), None, [], RULES, r3_advisory=True)
         assert report.blocked, "错误率与绝对 P95 是兜底线，advisory 不该动它们"
 
     def test_advisory_with_a_clean_run_still_passes(self):
         """没劣化时 advisory 不改变任何东西（不制造假的劣化文案）。"""
         deltas = analysis.compare_to_baseline({"p95_ms": 100.0}, {"p95_ms": 100.0})
-        report = gate.evaluate_perf(_perf_run(p95_ms=100.0), {"metrics": {"p95_ms": 100.0}},
-                                    deltas, RULES, r3_advisory=True)
+        report = gate.evaluate_perf(
+            _perf_run(p95_ms=100.0), {"metrics": {"p95_ms": 100.0}}, deltas, RULES, r3_advisory=True
+        )
         r3 = next(r for r in report.results if r.rule_id == "R3-baseline-degradation")
         assert r3.passed and "全部指标在容忍带内" in r3.message
         assert "噪声主导" not in r3.message, "没劣化就别提噪声，那是噪音（字面意义的）"
@@ -457,9 +464,9 @@ class TestPerfGate:
         门禁的价值一半在拦人，一半在告诉人怎么办。
         一个只说"红了"的门禁，两周后就会被 ignore 掉。
         """
-        report = gate.evaluate_perf(_perf_run(error_rate=0.9, p95_ms=9999.0, total=1,
-                                              p99_ms=99999.0),
-                                    {"metrics": {"p95_ms": 1.0}}, [], RULES)
+        report = gate.evaluate_perf(
+            _perf_run(error_rate=0.9, p95_ms=9999.0, total=1, p99_ms=99999.0), {"metrics": {"p95_ms": 1.0}}, [], RULES
+        )
         for r in report.results:
             assert r.action, f"{r.rule_id} 缺少处理建议"
 
@@ -482,12 +489,32 @@ class TestTailRatioIsMeasuredOnOneStep:
     """
 
     ROWS = [
-        {"total": 1000, "duration_s": 10.0, "error_count": 0, "rps": 100.0, "mean_ms": 20.0,
-         "p50_ms": 30.0, "p90_ms": 45.0, "p95_ms": 50.0, "p99_ms": 300.0, "max_ms": 400.0,
-         "max_inflight": 10},
-        {"total": 1000, "duration_s": 10.0, "error_count": 0, "rps": 100.0, "mean_ms": 60.0,
-         "p50_ms": 150.0, "p90_ms": 190.0, "p95_ms": 200.0, "p99_ms": 210.0, "max_ms": 220.0,
-         "max_inflight": 20},
+        {
+            "total": 1000,
+            "duration_s": 10.0,
+            "error_count": 0,
+            "rps": 100.0,
+            "mean_ms": 20.0,
+            "p50_ms": 30.0,
+            "p90_ms": 45.0,
+            "p95_ms": 50.0,
+            "p99_ms": 300.0,
+            "max_ms": 400.0,
+            "max_inflight": 10,
+        },
+        {
+            "total": 1000,
+            "duration_s": 10.0,
+            "error_count": 0,
+            "rps": 100.0,
+            "mean_ms": 60.0,
+            "p50_ms": 150.0,
+            "p90_ms": 190.0,
+            "p95_ms": 200.0,
+            "p99_ms": 210.0,
+            "max_ms": 220.0,
+            "max_inflight": 20,
+        },
     ]
 
     def test_tail_ratio_comes_from_a_single_step(self):
@@ -504,8 +531,7 @@ class TestTailRatioIsMeasuredOnOneStep:
         assert naive["p99_ms"] / naive["p95_ms"] <= RULES["perf"]["thresholds"]["p99_over_p95_max"]
 
         run = _perf_run(p95_ms=merged["p95_ms"], p99_ms=merged["p99_ms"])
-        r5 = next(r for r in gate.evaluate_perf(run, None, [], RULES).results
-                  if r.rule_id == "R5-tail-jitter")
+        r5 = next(r for r in gate.evaluate_perf(run, None, [], RULES).results if r.rule_id == "R5-tail-jitter")
         assert not r5.passed, "同一梯度内 6.00 的尾比必须被判 FAIL"
         assert r5.severity == gate.WARNING
 
@@ -547,8 +573,7 @@ class TestSuiteGate:
 
     def test_flaky_over_budget_is_warning(self):
         """flaky 超预算只警告。flaky 是"要处理的债务"，不是"必须回滚的事故"。"""
-        report = gate.evaluate_suite(40, 0, 0, [{"nodeid": "a"}, {"nodeid": "b"}, {"nodeid": "c"}],
-                                     RULES)
+        report = gate.evaluate_suite(40, 0, 0, [{"nodeid": "a"}, {"nodeid": "b"}, {"nodeid": "c"}], RULES)
         s2 = next(r for r in report.results if r.rule_id == "S2-flaky-budget")
         assert not s2.passed and s2.severity == gate.WARNING
         assert not report.blocked
@@ -563,8 +588,7 @@ def test_merge_combines_reports():
     a = gate.evaluate_probe({"agg": 10.0, "n1": 20.0}, RULES)
     b = gate.evaluate_suite(1, 0, 0, [], RULES)
     merged = gate.merge(a, b)
-    assert {r.rule_id for r in merged.results} == {"P1-n1-probe", "P2-n1-agg-ratio", "S1-pass-rate",
-                                                   "S2-flaky-budget"}
+    assert {r.rule_id for r in merged.results} == {"P1-n1-probe", "P2-n1-agg-ratio", "S1-pass-rate", "S2-flaky-budget"}
 
 
 def test_load_rules_reads_real_config():
@@ -593,8 +617,7 @@ class TestStore:
         """失败也要入库。只存成功记录的度量平台，通过率是假的。"""
         store.upsert_run("r2", "perf", "lab")
         store.finish_run("r2", "failed", {"p95_ms": 999.0})
-        assert any(r["run_id"] == "r2" and r["status"] == "failed"
-                   for r in store.recent_runs(kind="perf", label="lab"))
+        assert any(r["run_id"] == "r2" and r["status"] == "failed" for r in store.recent_runs(kind="perf", label="lab"))
 
     def test_upsert_is_idempotent(self):
         store.upsert_run("r3", "perf", "lab", config={"a": 1})
@@ -622,8 +645,9 @@ class TestStore:
 
     def test_baseline_config_snapshot_roundtrip(self):
         """基线要连"当时被测的是什么"一起存，否则事后无从判断可比性。"""
-        store.set_baseline("perf", "lab", "r1", {"p95_ms": 10.0},
-                           config={"items": 20000, "report_mode": "agg", "step_users": [10, 20]})
+        store.set_baseline(
+            "perf", "lab", "r1", {"p95_ms": 10.0}, config={"items": 20000, "report_mode": "agg", "step_users": [10, 20]}
+        )
         b = store.get_baseline("perf", "lab")
         assert b["config"]["items"] == 20000
         assert b["config"]["step_users"] == [10, 20]
@@ -662,7 +686,9 @@ class TestStore:
         store.upsert_run("r4", "perf", "lab")
         st = summarize(
             [Sample(scenario="s", status=200, elapsed_ms=float(i), ok=True, at=1.0) for i in range(1, 101)],
-            label="10u", users=10, duration_s=10.0,
+            label="10u",
+            users=10,
+            duration_s=10.0,
         )
         store.add_steps("r4", [st, st.as_dict()])
         rows = store.steps_for_run("r4")
@@ -671,20 +697,32 @@ class TestStore:
 
     def test_gate_results_roundtrip(self):
         store.upsert_run("r5", "perf", "lab")
-        store.add_gate_results("r5", [
-            {"rule_id": "R1-error-rate", "passed": False, "severity": "blocking",
-             "message": "m", "observed": 1, "expected": 0},
-        ])
+        store.add_gate_results(
+            "r5",
+            [
+                {
+                    "rule_id": "R1-error-rate",
+                    "passed": False,
+                    "severity": "blocking",
+                    "message": "m",
+                    "observed": 1,
+                    "expected": 0,
+                },
+            ],
+        )
         with store.tx() as conn:
             rows = conn.execute("SELECT * FROM gate_results WHERE run_id='r5'").fetchall()
         assert len(rows) == 1 and rows[0]["passed"] == 0
 
     def test_cases_and_flaky_history(self):
         store.upsert_run("r6", "suite", "lab")
-        store.add_cases("r6", [
-            {"nodeid": "t::a", "outcome": "passed", "duration": 0.1},
-            {"nodeid": "t::a", "outcome": "failed", "duration": 0.2, "fail_message": "boom"},
-        ])
+        store.add_cases(
+            "r6",
+            [
+                {"nodeid": "t::a", "outcome": "passed", "duration": 0.1},
+                {"nodeid": "t::a", "outcome": "failed", "duration": 0.2, "fail_message": "boom"},
+            ],
+        )
         hist = store.cases_for_node("t::a")
         assert len(hist) == 2
         assert store.all_nodeids() == ["t::a"]

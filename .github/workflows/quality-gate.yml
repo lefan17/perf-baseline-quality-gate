@@ -72,9 +72,12 @@ jobs:
       - name: ruff
         run: python -m ruff check .
 
-      - name: ruff 格式检查（只报告，不自动改）
+      # 格式检查是**阻塞项**：38 个文件在本机实测已全部格式化，
+      # 没有理由再让它"只报告"——只报告的格式检查等于没有格式检查，
+      # 因为没人会因为一条黄色警告去改空白。
+      # 与 fullstack-test-framework 的 `lint` job 保持同一口径。
+      - name: ruff 格式检查（阻塞，不自动改）
         run: python -m ruff format --check .
-        continue-on-error: true
 
       # mypy 的严格度与分阶段豁免清单在 pyproject.toml 的 [tool.mypy]。
       # 注意：这份配置里有一份**显式登记的类型债清单**（5 个模块），
@@ -403,4 +406,119 @@ jobs:
             echo "若退出码为 \`success\`（放行），说明缺陷可能已被修复 ——"
             echo "此时应当更新 \`docs/已知问题.md\` 并把本条改成断言"已修复"。"
             echo "**不要**默默接受一次绿：一条永远绿的探针等于没有探针。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 在线看板：把 dashboard 渲染成一页静态 HTML 推到 gh-pages。
+  #
+  # 为什么值得单独一个 job：
+  # 这个仓库最需要"看趋势"的地方是 P95 随时间怎么走、基线被哪一轮顶上去的、
+  # 哪条用例在 flaky 名单上待了多久 —— 这些在本地 `platform_cli.py serve`
+  # 里都看得到，但**只有本机看得到**。审阅者不会 clone 下来跑压测，
+  # 于是"有看板"这件事在仓库外面等于不存在。
+  #
+  # 三个刻意的决定：
+  # 1. 复用 `render_snapshot()`，不另写一套渲染 —— 线上看板与本地 `serve`
+  #    必须是**同一份代码**渲染的，否则会出现"两边说法不一致"这种最难查的
+  #    分裂（本地 p95 是绿的，页面上是红的，谁对？）。
+  # 2. 带上历史库。CI 每轮都是全新检出，库里只有本轮那几行；不带历史，
+  #    趋势图永远只有一个点，等于没有趋势。所以先把 gh-pages 上那份
+  #    `history.db` 取下来合并，再导出，再把合并后的库推回去。
+  # 3. push main / 手动触发才发布。PR 的内容未必进 main，往 gh-pages 推
+  #    等于提前发布一个可能被否决的版本。
+  pages:
+    name: 在线看板（gh-pages）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: perf-gate
+    # 门禁**红了也要**更新看板：红的那些轮次恰恰最需要被看见
+    # （"这次为什么红了"、"是慢慢变慢还是突然崩"）。默认的 needs 语义是
+    # 上游成功才跑，那会让看板在出事的时候停止更新 —— 正好和它存在的
+    # 目的相反。
+    #
+    # 但 platform-tests 挂了时不发布：那时 perf-gate 根本没跑，
+    # 库里没有本轮数据，发出去只会让人以为"这一轮是绿的"。
+    if: always() && needs.perf-gate.result != 'skipped'
+    # 看板发不出去不该让整条流水线变红：门禁已经在上一个 job 判过了，
+    # 这里的失败是"发布"失败，不是"质量"失败。但会被摘要显式标出来。
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 取回历史结果库
+        id: hist
+        # gh-pages 第一次发布时还不存在 —— 那是正常状态，不是错误。
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mkdir -p .history
+          if git fetch --depth=1 origin gh-pages 2>/dev/null; then
+            git show origin/gh-pages:history.db > .history/history.db 2>/dev/null \
+              && echo "取到历史库：$(du -h .history/history.db | cut -f1)" \
+              || echo "gh-pages 上没有 history.db（首次发布）"
+          else
+            echo "远端还没有 gh-pages 分支（首次发布）"
+          fi
+
+      - name: 跑一轮压测产生本轮数据
+        # 这一轮的数据只给看板用：门禁在 perf-gate 里已经判过了，
+        # 这里要的是"这次提交在图上落一个点"。参数取小值，别让看板 job
+        # 变成第二个 45 分钟的长跑。
+        run: |
+          python platform_cli.py run --label ci-dashboard --items 20000 \
+            --step-users 10 20 --step-duration 5 --r3-advisory || true
+
+      - name: 导出静态看板（并入历史）
+        run: |
+          python platform_cli.py report --out reports/dashboard \
+            --merge-db .history/history.db
+
+      - name: 发布到 gh-pages
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          publish_dir="$(mktemp -d)"
+          cp reports/dashboard/index.html "$publish_dir"/
+          # 把合并后的库一起发布：下一轮 CI 靠它画出连续的趋势。
+          # 只发布这一个文件，不发布 reports/ 下的其它产物 —— gh-pages
+          # 只承载"给人看的页面 + 画趋势所需的那一份数据"。
+          cp quality.db "$publish_dir"/history.db
+          cd "$publish_dir"
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "docs: 更新性能看板（${GITHUB_SHA::7}）"
+          git push -q --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+
+      - name: 看板摘要
+        if: always()
+        run: |
+          {
+            echo "## 在线看板"
+            echo ""
+            if [ -f reports/dashboard/index.html ]; then
+              echo "- 页面大小：$(du -h reports/dashboard/index.html | cut -f1)"
+              echo "- 发布状态：\`${{ job.status }}\`（PR 上不发布）"
+              echo "- 地址：https://$(echo '${{ github.repository }}' | tr 'A-Z' 'a-z' | sed 's|/|.github.io/|')/"
+            else
+              echo "**没有生成页面** —— 导出步骤失败了，看上面的日志。"
+            fi
+            echo ""
+            echo "历史库：${{ steps.hist.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"

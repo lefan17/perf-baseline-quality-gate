@@ -237,8 +237,7 @@ def add_cases(run_id: str, cases: list[dict]) -> None:
     with tx() as conn:
         for c in cases:
             conn.execute(
-                "INSERT INTO cases(run_id, nodeid, outcome, duration_s, fail_message, markers)"
-                " VALUES (?,?,?,?,?,?)",
+                "INSERT INTO cases(run_id, nodeid, outcome, duration_s, fail_message, markers) VALUES (?,?,?,?,?,?)",
                 (
                     run_id,
                     c.get("nodeid", ""),
@@ -253,9 +252,7 @@ def add_cases(run_id: str, cases: list[dict]) -> None:
 def get_baseline(kind: str, label: str) -> dict | None:
     init_db()
     with tx() as conn:
-        row = conn.execute(
-            "SELECT * FROM baselines WHERE kind=? AND label=?", (kind, label)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM baselines WHERE kind=? AND label=?", (kind, label)).fetchone()
     if row is None:
         return None
     return {
@@ -268,8 +265,7 @@ def get_baseline(kind: str, label: str) -> dict | None:
     }
 
 
-def set_baseline(kind: str, label: str, run_id: str, metrics: dict,
-                 config: dict | None = None) -> None:
+def set_baseline(kind: str, label: str, run_id: str, metrics: dict, config: dict | None = None) -> None:
     """设定基线。`config` 是被测配置快照（items / report_mode / step_users）。
 
     不带 `config` 的老调用方式仍然可用（写空快照），但那意味着**这条基线没法
@@ -283,8 +279,14 @@ def set_baseline(kind: str, label: str, run_id: str, metrics: dict,
             " ON CONFLICT(kind, label) DO UPDATE SET run_id=excluded.run_id,"
             " set_at=excluded.set_at, metrics_json=excluded.metrics_json,"
             " config_json=excluded.config_json",
-            (kind, label, run_id, now_iso(), json.dumps(metrics, ensure_ascii=False),
-             json.dumps(config or {}, ensure_ascii=False)),
+            (
+                kind,
+                label,
+                run_id,
+                now_iso(),
+                json.dumps(metrics, ensure_ascii=False),
+                json.dumps(config or {}, ensure_ascii=False),
+            ),
         )
 
 
@@ -337,8 +339,7 @@ def cases_for_node(nodeid: str, limit: int = 50) -> list[dict]:
         return [
             dict(r)
             for r in conn.execute(
-                "SELECT run_id, outcome, duration_s, fail_message FROM cases WHERE nodeid=?"
-                " ORDER BY id DESC LIMIT ?",
+                "SELECT run_id, outcome, duration_s, fail_message FROM cases WHERE nodeid=? ORDER BY id DESC LIMIT ?",
                 (nodeid, limit),
             ).fetchall()
         ]
@@ -353,3 +354,95 @@ def all_nodeids(limit: int = 5000) -> list[str]:
                 "SELECT nodeid FROM cases GROUP BY nodeid ORDER BY nodeid LIMIT ?", (limit,)
             ).fetchall()
         ]
+
+
+def _common_columns(conn: sqlite3.Connection, table: str, *, skip_id: bool) -> list[str]:
+    """`main` 与 `src` 两张同名表都有的列。
+
+    为什么不用写死的列名：`src` 可能是**旧版本**生成的库（gh-pages 上
+    上一轮留下的那份），而 schema 是会长列的 —— `baselines.config_json`
+    就是这么加进来的。写死列名会让合并在升级后直接崩，
+    而"取交集"能让新旧库都能合：缺的列取目标表默认值。
+
+    `id` 必须排除：它是 `INTEGER PRIMARY KEY`（rowid 别名），
+    把源库的 id 原样搬过来会在自增序列上撞车。
+    """
+    dst = [r["name"] for r in conn.execute(f"PRAGMA main.table_info({table})")]
+    src = {r["name"] for r in conn.execute(f"PRAGMA src.table_info({table})")}
+    return [c for c in dst if c in src and not (skip_id and c == "id")]
+
+
+def merge_from(src: Path | str) -> dict:
+    """把另一个结果库里的**历史轮次**并入当前库。
+
+    ## 为什么需要它
+
+    CI 的每一步都是全新检出，`quality.db` 里只有**本轮**那几行。于是
+    在 runner 上导出看板时，趋势图永远只有一个点 —— 一个画不出趋势的
+    趋势图，等于没有。要画出"慢慢变慢"的形状，必须把历史带过来。
+
+    ## 合并规则
+
+    * **只补本地没有的轮次**（按 `run_id`）。同名轮次以本地为准：
+      本地那份是这一轮刚从 runner 上量出来的，源库那份是旧的。
+    * **基线不动**。`baselines` 的权威副本在仓库里（`baselines/*.json`
+      快照），库里的基线是给人看的缓存；合并把它覆盖掉，等于让
+      "上一轮的基线"悄悄替换掉"这一轮的基线"。
+    * 缺列时取目标表默认值，所以新旧库可以互合。
+
+    返回各表实际写入的行数，供调用方打日志（合并 0 行和合并 20 轮
+    是完全不同的两件事，日志里必须能区分）。
+    """
+    src_path = Path(src)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"没有这个库：{src_path}")
+
+    init_db()
+    counts = {"runs": 0, "steps": 0, "cases": 0, "gate_results": 0}
+    with tx() as conn:
+        conn.execute("ATTACH DATABASE ? AS src", (str(src_path),))
+        try:
+            # 只挑本地没有的轮次，避免把本地刚测出来的数据覆盖成旧值。
+            new_ids = [
+                r["run_id"]
+                for r in conn.execute(
+                    "SELECT run_id FROM src.runs WHERE run_id NOT IN (SELECT run_id FROM main.runs)"
+                ).fetchall()
+            ]
+            if not new_ids:
+                # 没有新轮次是**正常结果**（上一轮已经合过），不是错误。
+                # 先 commit 再往下走：附加库上还挂着事务时 DETACH 会报
+                # `database src is locked`。
+                conn.commit()
+                placeholders = None
+            else:
+                placeholders = ",".join("?" * len(new_ids))
+
+            if placeholders is not None:
+                run_cols = _common_columns(conn, "runs", skip_id=True)
+                conn.execute(
+                    f"INSERT OR IGNORE INTO main.runs ({','.join(run_cols)})"
+                    f" SELECT {','.join(run_cols)} FROM src.runs WHERE run_id IN ({placeholders})",
+                    new_ids,
+                )
+                counts["runs"] = conn.execute(
+                    f"SELECT COUNT(*) FROM main.runs WHERE run_id IN ({placeholders})", new_ids
+                ).fetchone()[0]
+
+                for table in ("steps", "cases", "gate_results"):
+                    cols = _common_columns(conn, table, skip_id=True)
+                    if not cols:
+                        continue
+                    before = conn.total_changes
+                    conn.execute(
+                        f"INSERT INTO main.{table} ({','.join(cols)})"
+                        f" SELECT {','.join(cols)} FROM src.{table} WHERE run_id IN ({placeholders})",
+                        new_ids,
+                    )
+                    counts[table] = conn.total_changes - before
+                # DETACH 必须在事务结束之后：日志模式下分离一个正处于写事务中的
+                # 附加库会报 `database src is locked`。先 commit 落盘再分离。
+                conn.commit()
+        finally:
+            conn.execute("DETACH DATABASE src")
+    return counts

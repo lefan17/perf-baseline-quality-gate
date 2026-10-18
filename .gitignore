@@ -12,6 +12,10 @@ quality.db
 quality.db-wal
 quality.db-shm
 reports/*.md
+# 导出的静态看板（是产物，不是源码；CI 会把它推到 gh-pages）
+reports/dashboard/
+# Pages job 从 gh-pages 取回来临时合并的历史库
+.history/
 
 # 被测服务的开发库（压测用的库一律落在临时目录，不会出现在这里）
 sut/sut.db
