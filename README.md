@@ -136,7 +136,7 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（180 passed，约 85 秒）
+# 2. 跑平台自身的测试（188 passed，约 80 秒）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -481,7 +481,7 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-180 passed in ~85s
+188 passed in ~79s
 ```
 
 | 测试文件 | 用例数 | 覆盖 |
@@ -491,11 +491,11 @@ $ pytest tests/ -q
 | `test_sut_api.py` | 20 | 被测服务功能（含**两种实现数据一致性交叉校验**）+ 临时目录回收 |
 | `test_probes.py` | 3 | 性能缺陷探针（真实数据量 20 000） |
 | `test_cli.py` | 19 | CLI 解析器接线（每个子命令都绑定真实函数；`baseline` 的 5 个 action 也是契约） |
-| `test_dashboard.py` | 13 | 看板渲染接线（折线真的被画出来，不是定义了没用）+ 汇总口径单一来源 |
+| `test_dashboard.py` | 21 | 看板渲染接线（折线真的被画出来，不是定义了没用）+ 汇总口径单一来源 + 静态快照导出（不泄露本机路径） |
 | `test_r3_end_to_end.py` | 2 | R3 端到端：真的压一轮、真的比基线、真的会变红（`sut` + `perf` 标记） |
 | `test_rules_single_source.py` | 10 | 阈值只有一个住址（`gate_rules.yaml`），改 YAML 真的会改判定 |
 | `test_baseline_snapshot.py` | 26 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 / 记的是量出基线的机器 / 只报数模式 |
-| **合计** | **180** | |
+| **合计** | **188** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -732,7 +732,8 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 带 `continue-on-error: true`，理由是"先不逼着改格式"。实测这句理由站不住——只报告的
 格式检查等于没有格式检查，没人会因为一条黄色警告去改空白。当天在本机跑了
 `ruff format .`，**17 个文件被重排、21 个已合规**，重排后 `ruff format --check .`
-是 **38 files already formatted**，`pytest tests/ -q` 仍是 180 passed、
+是 **38 files already formatted**，`pytest tests/ -q` 仍是 180 passed（当时的口径；同一天
+后来又补了看板静态导出的 8 条测试，现在合计 **188 passed**）、
 `mypy` 仍是 16 source files 零问题。既然存量已经清零，就没有理由再让它非阻塞：
 现在这一步与 `ruff check .`、`mypy` 一样是**阻塞项**，与
 `fullstack-test-framework` 的 `lint` job 同一口径。改动基本落在换行与缩进
