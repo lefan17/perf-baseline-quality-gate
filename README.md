@@ -202,7 +202,7 @@ GET /gate?run_id=perf-20261010-190550-f63da4
 ### 在 GitHub Actions 上的实测结果
 
 本仓库推上 GitHub 后 `.github/workflows/quality-gate.yml` 真的跑了，
-三个 job 全部通过（run [38055102821](https://github.com/lefan17/perf-baseline-quality-gate/actions/runs/38055102821)，
+当时流水线上的 **3 个 job 全部通过**（run [38055102821](https://github.com/lefan17/perf-baseline-quality-gate/actions/runs/38055102821)，
 `ubuntu-24.04` / Python 3.12）。从日志里摘的关键行：
 
 | job | 日志原文 | 结论 |
@@ -366,7 +366,9 @@ node_modules，是它最后没人维护的常见原因。
 | `S3-pytest-exit` | blocking | pytest 退出码不是 0/1，或退出码为 1 但库里没有任何 failed/error 用例 | 本轮**没有正常跑完**（5=没收集到用例，2=被中断，3=内部错误，4=用法错误），而用例表看起来是干净的。**仅在调用方显式传入 `exit_code` 时产出** | `suite` |
 
 12 条规则全部住在一个函数里对应一处判定，判定逻辑不在 YAML 里 ——
-YAML 只放阈值。CI 的三个 job（`suite` / `run` / `probe`）合起来正好覆盖这 12 条。
+YAML 只放阈值。CI 里真正**跑规则**的三个 job（`platform-tests` / `perf-gate` / `n1-probe`，
+分别对应 CLI 的 `suite` / `run` / `probe` 子命令）合起来正好覆盖这 12 条；
+另外两个 job（`lint` / `security-audit`）不产出规则判定，只做前置与旁路扫描。
 
 **为什么劣化容忍带是 10%：它量出来的，不是拍出来的。**
 
@@ -704,7 +706,8 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 > 同一个模块里将来出现同类错误也不会报 —— 这是这份配置已知的代价，
 > 接受它的原因是"整模块 `ignore_errors`"（一开始的写法）代价更大：
 > 那样连**别的**错误码也一起消失，`mypy` 会输出
-> `Success: no issues found in 15 source files`，
+> `Success: no issues found in 15 source files`（那份配置当时的树上是 15 个源文件；
+> 现在这棵树是 **16 个**，见下方实测），
 > 而 5 个真实错误一个都没消失 —— 那正是这个仓库最反对的**静默放行**。
 
 ### 4. 依赖锁文件与漏洞扫描
@@ -752,8 +755,8 @@ end-of-file-fixer、check-yaml/toml/json、mixed-line-ending、detect-private-ke
 
 | 变化 | 为什么 |
 |---|---|
-| 三个 job 加 `cache: pip` | 每次 CI 重装全部依赖是纯浪费；缓存 key 依赖两个 requirements 文件 |
-| 五个 job 加 `timeout-minutes` | 默认 360 分钟。压测一旦卡住（服务起不来、端口被占），没人盯着就是白烧 6 小时 |
+| 五个 job 全部加 `cache: pip` | 每次 CI 重装全部依赖是纯浪费；缓存 key 依赖两个 requirements 文件 |
+| 五个 job 全部加 `timeout-minutes` | 默认 360 分钟。压测一旦卡住（服务起不来、端口被占），没人盯着就是白烧 6 小时 |
 | 加 `schedule`（`17 3 * * 1`，每周一凌晨） | 缺陷不会等到有人推代码才出现（依赖漂移、runner 镜像更新、系统时钟/调度行为变化）。**没有定时回归的性能门禁只能证明"我推代码那天没退化"** |
 | 加 `concurrency` | 同一个分支连推两次时，取消旧的那次 —— 但 **schedule 不参与取消**（夜间回归被白天的 push 顶掉是最常见的"门禁悄悄消失"） |
 | `permissions: contents: read` | 最小权限 |
@@ -772,7 +775,7 @@ $env:PERF_ENV="dev"                                    # dev / staging / prod / 
 "同一条命令在不同机器上跑出不同环境"）。三条不变量：
 
 1. **不设 `PERF_ENV` 时行为与引入分层之前逐字节一致** —— 不读、不写任何变量。
-   所以 CI 的三个 job 一行都不用改，既有基线也不会因为分层而失效。
+   所以 CI 的五个 job 一行都不用改，既有基线也不会因为分层而失效。
 2. 档案**不覆盖已显式设置的环境变量**（`setdefault` 语义）：
    命令行上 `$env:PERF_SUT_ITEMS="500"` 的意图比档案默认值更强。
 3. 档案里**只写与默认值不同的变量** —— 默认值定义在代码里，重复的那份迟早漂移。
