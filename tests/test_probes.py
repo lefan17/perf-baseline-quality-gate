@@ -147,8 +147,7 @@ def test_probe_gap_widens_with_data_volume():
         "若 N+1 已被改为按需 JOIN，本用例应随之删除或改写。"
     )
     assert n1_big > n1_small, (
-        f"n1 耗时未随数据量增长（{n1_small:.1f}ms → {n1_big:.1f}ms），"
-        "怀疑数据没真正灌进去或查询被缓存了。"
+        f"n1 耗时未随数据量增长（{n1_small:.1f}ms → {n1_big:.1f}ms），怀疑数据没真正灌进去或查询被缓存了。"
     )
 
 

@@ -195,16 +195,15 @@ def test_reports_modes_agree_on_data():
     for mode in ("agg", "n1"):
         handle = start_sut(report_mode=mode, items=800)
         try:
-            results[mode] = requests.get(
-                f"{handle.base_url}/api/reports/slow-by-supplier", timeout=30
-            ).json()["rows"]
+            results[mode] = requests.get(f"{handle.base_url}/api/reports/slow-by-supplier", timeout=30).json()["rows"]
         finally:
             handle.stop()
 
     agg, n1 = results["agg"], results["n1"]
     assert agg and n1
-    assert all(set(r) == {"supplier_id", "supplier_name", "item_count", "stock_total",
-                          "delta_recent"} for r in agg + n1)
+    assert all(
+        set(r) == {"supplier_id", "supplier_name", "item_count", "stock_total", "delta_recent"} for r in agg + n1
+    )
     assert len(agg) == len(n1) == 40, "供应商数应为 40（N1_SUPPLIER_LIMIT 设计上限）"
     assert [r["supplier_id"] for r in agg] == list(range(1, 41)), "供应商顺序必须稳定"
     assert sum(r["item_count"] for r in agg) == 800, "物料总数必须与灌入量一致"
@@ -455,8 +454,7 @@ class TestTempDirCleanup:
         log_dir = tmp_path / "mine-log"
         db_dir.mkdir()
         log_dir.mkdir()
-        handle = start_sut(report_mode="agg", items=50,
-                           db_path=str(db_dir / "sut.db"), log_dir=str(log_dir))
+        handle = start_sut(report_mode="agg", items=50, db_path=str(db_dir / "sut.db"), log_dir=str(log_dir))
         assert handle.tmp_dirs == []
         handle.stop()
         assert db_dir.exists() and log_dir.exists()
@@ -470,4 +468,3 @@ class TestTempDirCleanup:
         finally:
             for d in dirs:
                 shutil.rmtree(d, ignore_errors=True)
-

@@ -76,9 +76,7 @@ def items_list(session: requests.Session, base_url: str, timeout_s: float = 10.0
 
 def item_detail(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
     item_id = _random_item_id(_rnd())
-    return run_api_call(
-        session, base_url, "GET", f"/api/items/{item_id}", scenario="item_detail", timeout_s=timeout_s
-    )
+    return run_api_call(session, base_url, "GET", f"/api/items/{item_id}", scenario="item_detail", timeout_s=timeout_s)
 
 
 def stock_by_category(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:

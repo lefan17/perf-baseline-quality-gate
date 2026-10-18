@@ -165,22 +165,17 @@ def slow_by_supplier(mode: str | None = None, window_days: int = Query(30, ge=1,
             return {"mode": "agg", "window_days": window_days, "rows": [dict(r) for r in rows]}
 
         # mode == "n1"：N+1 查询 —— 供应商查一次，再逐供应商各查两次。
-        suppliers = conn.execute(
-            "SELECT id, name FROM suppliers ORDER BY id LIMIT ?", (N1_SUPPLIER_LIMIT,)
-        ).fetchall()
+        suppliers = conn.execute("SELECT id, name FROM suppliers ORDER BY id LIMIT ?", (N1_SUPPLIER_LIMIT,)).fetchall()
         cutoff = _cutoff(window_days)
         out = []
         for s in suppliers:
-            items = conn.execute(
-                "SELECT id, stock FROM items WHERE supplier_id = ?", (s["id"],)
-            ).fetchall()
+            items = conn.execute("SELECT id, stock FROM items WHERE supplier_id = ?", (s["id"],)).fetchall()
             stock_total = 0
             delta_recent = 0
             for it in items:
                 stock_total += it["stock"]
                 row = conn.execute(
-                    "SELECT COALESCE(SUM(delta), 0) AS d FROM ledger"
-                    " WHERE item_id = ? AND ts >= ?",
+                    "SELECT COALESCE(SUM(delta), 0) AS d FROM ledger WHERE item_id = ? AND ts >= ?",
                     (it["id"], cutoff),
                 ).fetchone()
                 delta_recent += row["d"]
@@ -249,8 +244,7 @@ def create_order(item_id: int = Query(...), qty: int = Query(..., ge=1), idempot
             raise HTTPException(status_code=409, detail="insufficient stock")
         conn.execute("UPDATE items SET stock = stock - ? WHERE id = ?", (qty, item_id))
         cur = conn.execute(
-            "INSERT INTO orders(item_id, qty, status, idempotency_key, created_at)"
-            " VALUES (?, ?, 'CREATED', ?, ?)",
+            "INSERT INTO orders(item_id, qty, status, idempotency_key, created_at) VALUES (?, ?, 'CREATED', ?, ?)",
             (item_id, qty, key, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
@@ -264,9 +258,7 @@ def diagnostics_indexes(response: Response):
     """报告报表索引是否存在 —— 门禁的 demo 用它证明索引被误删时能被拦住。"""
     conn = connect()
     try:
-        names = {
-            r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
-        }
+        names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
         expected = {"idx_items_category", "idx_items_supplier", "idx_ledger_item"}
         missing = sorted(expected - names)
     finally:

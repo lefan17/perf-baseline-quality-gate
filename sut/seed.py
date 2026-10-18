@@ -18,8 +18,16 @@ from sut.db import connect, db_path, init_db  # noqa: E402
 
 DEFAULT_ITEMS = 20_000
 CATEGORY_NAMES = [
-    "紧固件", "轴承", "密封件", "传动件", "电气件",
-    "气动件", "液压件", "传感器", "线缆", "工具",
+    "紧固件",
+    "轴承",
+    "密封件",
+    "传动件",
+    "电气件",
+    "气动件",
+    "液压件",
+    "传感器",
+    "线缆",
+    "工具",
 ]
 SUPPLIER_NAMES = [f"供应商-{i:03d}" for i in range(1, 41)]
 
@@ -77,9 +85,7 @@ def seed(items: int | None = None, force: bool = False) -> dict:
                     (lid, i, rnd.randint(-20, 200), (now - timedelta(days=rnd.randint(0, 400))).isoformat())
                 )
                 lid += 1
-        conn.executemany(
-            "INSERT INTO ledger(id, item_id, delta, ts) VALUES (?, ?, ?, ?)", ledger_rows
-        )
+        conn.executemany("INSERT INTO ledger(id, item_id, delta, ts) VALUES (?, ?, ?, ?)", ledger_rows)
         conn.commit()
         return {"seeded": True, "items": items, "ledger_rows": len(ledger_rows)}
     finally:

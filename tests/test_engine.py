@@ -64,8 +64,8 @@ def test_percentile_returns_observed_value():
 
 
 def test_percentile_edges():
-    assert percentile([], 95) == 0.0            # 空集合不抛异常，压测失败时也要能出报告
-    assert percentile([7.0], 99) == 7.0         # 单样本：P99 就是它自己
+    assert percentile([], 95) == 0.0  # 空集合不抛异常，压测失败时也要能出报告
+    assert percentile([7.0], 99) == 7.0  # 单样本：P99 就是它自己
     assert percentile([1.0, 2.0], 0) == 1.0
     assert percentile([1.0, 2.0], 100) == 2.0
     assert percentile([3.0, 1.0, 2.0], 100) == 3.0  # 输入乱序也要对

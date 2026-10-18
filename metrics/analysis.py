@@ -55,7 +55,7 @@ RPS_DEGRADATION_TOLERANCE = 0.10
 # 浮点比较的容差。
 #
 # `100.0 * (1 + 0.10)` 在 IEEE 754 下是 `110.00000000000001`，
-# 于是 `(110.00000000000001 - 100) / 100` 得到 `0.10000000000000009` —— 
+# 于是 `(110.00000000000001 - 100) / 100` 得到 `0.10000000000000009` ——
 # **比容忍带大了一点点**。结果就是"正好踩在边界上"的值被判成劣化，
 # 和 docstring 里写的「边界取不大于」自相矛盾。
 #
@@ -63,9 +63,9 @@ RPS_DEGRADATION_TOLERANCE = 0.10
 # 而"刚好涨了 10.0%"正是最容易被反复触发的那个点。
 _EPS = 1e-9
 KNEE_RPS_PER_USER_DROP = 0.20  # 每用户吞吐相对峰值掉 20% 即认为过拐点
-KNEE_ERROR_RATE = 0.01         # 错误率超过 1% 也算拐点
-FLAKY_MIN_RUNS = 6             # 少于 6 次执行不给 flaky 结论（样本太小）；YAML 可覆盖
-FLAKY_STABILITY_MAX = 0.85     # 稳定度（多数派占比）低于 85% 判 flaky；YAML 可覆盖
+KNEE_ERROR_RATE = 0.01  # 错误率超过 1% 也算拐点
+FLAKY_MIN_RUNS = 6  # 少于 6 次执行不给 flaky 结论（样本太小）；YAML 可覆盖
+FLAKY_STABILITY_MAX = 0.85  # 稳定度（多数派占比）低于 85% 判 flaky；YAML 可覆盖
 
 
 # --------------------------------------------------------------------------- #
@@ -88,10 +88,7 @@ class Delta:
             state = "劣化"
         elif self.improved:
             state = "改善"
-        return (
-            f"{self.metric}: {self.baseline:.3f} {arrow} {self.current:.3f} "
-            f"({self.pct_text()}) {state}"
-        )
+        return f"{self.metric}: {self.baseline:.3f} {arrow} {self.current:.3f} ({self.pct_text()}) {state}"
 
     def pct_text(self) -> str:
         """百分比的**给人看**的格式。
@@ -109,9 +106,7 @@ class Delta:
         return f"{self.delta_pct:+.1%}"
 
 
-def compare_metric(
-    metric: str, baseline: float, current: float, tolerance: float = DEGRADATION_TOLERANCE
-) -> Delta:
+def compare_metric(metric: str, baseline: float, current: float, tolerance: float = DEGRADATION_TOLERANCE) -> Delta:
     if baseline in (0, None) or baseline == 0:
         pct = 0.0 if current == 0 else float("inf")
     else:
@@ -191,8 +186,7 @@ class Comparability:
     def describe(self) -> str:
         if self.verdict == "ok":
             return "两轮配置一致，劣化百分比可比。"
-        head = ("两轮配置不可比" if self.verdict == "incomparable"
-                else "基线没有留下配置快照，无法判定可比性")
+        head = "两轮配置不可比" if self.verdict == "incomparable" else "基线没有留下配置快照，无法判定可比性"
         return f"{head}：{'；'.join(self.reasons)}"
 
 
@@ -265,8 +259,7 @@ def compare_to_baseline(current: dict, baseline: dict, rules: dict | None = None
     out: list[Delta] = []
     for metric in ("p95_ms", "p99_ms", "mean_ms", "max_ms"):
         if metric in baseline and metric in current:
-            out.append(compare_metric(metric, float(baseline[metric]), float(current[metric]),
-                                      tol_delay))
+            out.append(compare_metric(metric, float(baseline[metric]), float(current[metric]), tol_delay))
     for metric in ("error_rate",):
         if metric in baseline and metric in current:
             out.append(compare_metric(metric, float(baseline[metric]), float(current[metric]), 0.0))
@@ -518,10 +511,11 @@ def merge_step_rows(rows: list[dict]) -> dict:
     # 尾比 p95/p99 取"比值最大的那一级"的成对值 —— 见 docstring：
     # 各自取 max 会拼出一个从未发生过的组合，把真实的长尾稀释掉。
     # 比值打平时依次比较 p95_ms、p99_ms，保持"取最差一级"的语义。
-    worst_tail = max(
-        ((r["p99_ms"] / r["p95_ms"]) if r["p95_ms"] > 0 else 0.0, r["p95_ms"], r["p99_ms"])
-        for r in rows
-    ) if rows else None
+    worst_tail = (
+        max(((r["p99_ms"] / r["p95_ms"]) if r["p95_ms"] > 0 else 0.0, r["p95_ms"], r["p99_ms"]) for r in rows)
+        if rows
+        else None
+    )
     p95_worst = worst_tail[1] if worst_tail else 0
     p99_worst = worst_tail[2] if worst_tail else 0
 
@@ -580,10 +574,17 @@ def moving_direction(series: list[float], window: int = 3, rules: dict | None = 
 # --------------------------------------------------------------------------- #
 # 报告文本
 # --------------------------------------------------------------------------- #
-def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[Delta],
-                       knee: dict | None, platform_info: dict, config: dict,
-                       comparability: "Comparability | None" = None,
-                       rules: dict | None = None) -> str:
+def render_perf_report(
+    run_id: str,
+    label: str,
+    steps: list[dict],
+    deltas: list[Delta],
+    knee: dict | None,
+    platform_info: dict,
+    config: dict,
+    comparability: "Comparability | None" = None,
+    rules: dict | None = None,
+) -> str:
     """生成一页纸的压测报告（Markdown）。
 
     这份文本是给人看的，也是给面试官看的：**它必须能自己解释自己**
@@ -599,12 +600,15 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
     lines.append(f"# 压测报告 · {label}")
     lines.append("")
     lines.append(f"- run_id: `{run_id}`")
-    lines.append(f"- 平台: Python {platform_info.get('python', '?')} / {platform_info.get('platform', '?')}"
-                 f" / CPU {platform_info.get('cpu_count', '?')} 核")
-    lines.append(f"- 被测服务: FastAPI {platform_info.get('fastapi', '?')} + uvicorn {platform_info.get('uvicorn', '?')}"
-                 f" + SQLite(WAL)，数据量 {config.get('items', '?')} 条物料")
-    lines.append(f"- 报表实现: `{config.get('report_mode', '?')}`"
-                 f"（agg = 单条 SQL 聚合；n1 = 逐供应商查询，N+1）")
+    lines.append(
+        f"- 平台: Python {platform_info.get('python', '?')} / {platform_info.get('platform', '?')}"
+        f" / CPU {platform_info.get('cpu_count', '?')} 核"
+    )
+    lines.append(
+        f"- 被测服务: FastAPI {platform_info.get('fastapi', '?')} + uvicorn {platform_info.get('uvicorn', '?')}"
+        f" + SQLite(WAL)，数据量 {config.get('items', '?')} 条物料"
+    )
+    lines.append(f"- 报表实现: `{config.get('report_mode', '?')}`（agg = 单条 SQL 聚合；n1 = 逐供应商查询，N+1）")
     lines.append("")
     lines.append("## 各梯度结果")
     lines.append("")
@@ -628,8 +632,7 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
             f"错误率 = {(knee.get('error_rate') or 0):.2%}。"
         )
         lines.append("")
-        lines.append(f"峰值每用户吞吐 {knee['peak_rps_per_user']} req/s·用户 "
-                     f"→ 拐点处 {knee['rps_per_user']}。")
+        lines.append(f"峰值每用户吞吐 {knee['peak_rps_per_user']} req/s·用户 → 拐点处 {knee['rps_per_user']}。")
         stable = last_stable_step(steps)
         if stable:
             lines.append("")
@@ -660,8 +663,9 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
         lines.append("")
         lines.append("**判定：无法判定可比性。**")
         lines.append("")
-        lines.append("要拿到可比的结论，二选一：用与基线相同的配置复跑本轮，"
-                     "或在当前配置上用 `--set-baseline` 重建基线。")
+        lines.append(
+            "要拿到可比的结论，二选一：用与基线相同的配置复跑本轮，或在当前配置上用 `--set-baseline` 重建基线。"
+        )
     elif deltas:
         lines.append("## 与基线对比")
         lines.append("")
@@ -681,13 +685,20 @@ def render_perf_report(run_id: str, label: str, steps: list[dict], deltas: list[
     lines.append("")
     lines.append("## 结论的边界（必须连同数字一起说）")
     lines.append("")
-    lines.append("- **压测机与被测服务在同一台机器上**，两者抢同一份 CPU 与内存。"
-                 "真实部署里这是两批机器，所以本报告的绝对性能数字**偏保守**，"
-                 "有意义的是**趋势与拐点形状**（同一口径下的相对变化）。")
-    lines.append("- 单机自研引擎，没有分布式加压能力。并发上限受压测机线程数与 GIL 影响，"
-                 "`实际在途` 明显低于配置并发时，瓶颈在压测机而不是被测服务。")
-    lines.append("- SQLite(WAL) 是单文件数据库，写路径的并发能力远低于真实 MySQL/PostgreSQL。"
-                 "**写场景的绝对数字不可外推**。")
-    lines.append("- 本机有杀毒/索引等后台负载，短时压测的 P99 抖动大，"
-                 f"因此口径里设了 {tolerance_from_rules(rules)[0]:.0%} 的噪声容忍带。")
+    lines.append(
+        "- **压测机与被测服务在同一台机器上**，两者抢同一份 CPU 与内存。"
+        "真实部署里这是两批机器，所以本报告的绝对性能数字**偏保守**，"
+        "有意义的是**趋势与拐点形状**（同一口径下的相对变化）。"
+    )
+    lines.append(
+        "- 单机自研引擎，没有分布式加压能力。并发上限受压测机线程数与 GIL 影响，"
+        "`实际在途` 明显低于配置并发时，瓶颈在压测机而不是被测服务。"
+    )
+    lines.append(
+        "- SQLite(WAL) 是单文件数据库，写路径的并发能力远低于真实 MySQL/PostgreSQL。**写场景的绝对数字不可外推**。"
+    )
+    lines.append(
+        "- 本机有杀毒/索引等后台负载，短时压测的 P99 抖动大，"
+        f"因此口径里设了 {tolerance_from_rules(rules)[0]:.0%} 的噪声容忍带。"
+    )
     return "\n".join(lines)

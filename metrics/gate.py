@@ -149,19 +149,18 @@ def evaluate_probe_data(agg_rows: list[dict] | None, n1_rows: list[dict] | None)
                 severity=WARNING,
                 skipped=True,
                 message=f"取不到 {'/'.join(missing)} 的响应体，本轮**没有校验**两种实现的数据是否等价"
-                        f"（不是「一致」，是「没比」）",
+                f"（不是「一致」，是「没比」）",
                 observed="",
                 expected=0,
                 action="这条规则是本平台最有价值的发现（P-4 聚合扇出，SUM(stock) 虚高 2.23 倍）"
-                       "唯一的守卫，它被跳过时速度对比就失去了前提。请查明取数失败的原因"
-                       "（服务已停 / 网络抖动 / 接口报错），而不是把本轮当成通过。",
+                "唯一的守卫，它被跳过时速度对比就失去了前提。请查明取数失败的原因"
+                "（服务已停 / 网络抖动 / 接口报错），而不是把本轮当成通过。",
             )
         )
         return report
 
     diffs, uncovered = _row_diffs(agg_rows, n1_rows)
-    extra = (f"；另有 {uncovered} 个供应商只在 agg 出现（n1 侧有 LIMIT 上限），"
-             f"这部分没有参与比对" if uncovered else "")
+    extra = f"；另有 {uncovered} 个供应商只在 agg 出现（n1 侧有 LIMIT 上限），这部分没有参与比对" if uncovered else ""
 
     if diffs:
         report.results.append(
@@ -173,9 +172,9 @@ def evaluate_probe_data(agg_rows: list[dict] | None, n1_rows: list[dict] | None)
                 observed=len(diffs),
                 expected=0,
                 action="先修数据一致性，再谈性能。agg 与 n1 返回不同结果时，"
-                       "两者不是一个功能的两种写法，比出来的倍数没有意义 —— "
-                       "本项目真实踩过这个坑：聚合扇出让 SUM(stock) 虚高 2.23 倍，"
-                       "而它不报错、不慢、功能用例全绿。",
+                "两者不是一个功能的两种写法，比出来的倍数没有意义 —— "
+                "本项目真实踩过这个坑：聚合扇出让 SUM(stock) 虚高 2.23 倍，"
+                "而它不报错、不慢、功能用例全绿。",
             )
         )
     elif uncovered:
@@ -196,13 +195,13 @@ def evaluate_probe_data(agg_rows: list[dict] | None, n1_rows: list[dict] | None)
                 severity=WARNING,
                 skipped=True,
                 message=f"两边的行数不同（agg={len(agg_rows)} n1={len(n1_rows)}）{extra}："
-                        f"数据等价性**无法判定**（已覆盖到的行逐字段相等，"
-                        f"但没覆盖的部分没人比过）",
+                f"数据等价性**无法判定**（已覆盖到的行逐字段相等，"
+                f"但没覆盖的部分没人比过）",
                 observed=uncovered,
                 expected=0,
                 action="先确认这是设计上的截断（`PERF_SUT_N1_SUPPLIERS` 上限）还是 n1 漏行。"
-                       "若是截断，让两侧取数范围一致再比对；若是漏行，那是真缺陷。"
-                       "在这之前，上面那个耗时倍数只对两边都覆盖到的供应商成立。",
+                "若是截断，让两侧取数范围一致再比对；若是漏行，那是真缺陷。"
+                "在这之前，上面那个耗时倍数只对两边都覆盖到的供应商成立。",
             )
         )
     else:
@@ -215,9 +214,9 @@ def evaluate_probe_data(agg_rows: list[dict] | None, n1_rows: list[dict] | None)
                 observed=0,
                 expected=0,
                 action="先修数据一致性，再谈性能。agg 与 n1 返回不同结果时，"
-                       "两者不是一个功能的两种写法，比出来的倍数没有意义 —— "
-                       "本项目真实踩过这个坑：聚合扇出让 SUM(stock) 虚高 2.23 倍，"
-                       "而它不报错、不慢、功能用例全绿。",
+                "两者不是一个功能的两种写法，比出来的倍数没有意义 —— "
+                "本项目真实踩过这个坑：聚合扇出让 SUM(stock) 虚高 2.23 倍，"
+                "而它不报错、不慢、功能用例全绿。",
             )
         )
     return report
@@ -304,8 +303,9 @@ def _row_diffs(agg_rows: list[dict], n1_rows: list[dict]) -> tuple[list[str], in
     return diffs, len(set(agg_idx) - set(n1_idx))
 
 
-def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules: dict,
-                  comparability=None, r3_advisory: bool = False) -> GateReport:
+def evaluate_perf(
+    run_metrics: dict, baseline: dict | None, deltas: list, rules: dict, comparability=None, r3_advisory: bool = False
+) -> GateReport:
     """性能门禁。
 
     `run_metrics` 是"本轮整轮"的汇总（含 p95_ms/p99_ms/error_rate/rps），
@@ -346,7 +346,7 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                 observed=observed,
                 expected=max_err,
                 action="先看报告里的错误类型分布：超时/连接被拒通常是容量问题，"
-                       "HTTP 5xx 是代码缺陷——两者的处理方式完全不同，别混在一起改阈值。",
+                "HTTP 5xx 是代码缺陷——两者的处理方式完全不同，别混在一起改阈值。",
             )
         )
 
@@ -363,7 +363,7 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                 observed=observed,
                 expected=max_p95,
                 action="绝对阈值是兜底线。如果服务确实变重了（功能增加），"
-                       "应当显式走一次基线评审再调阈值，而不是让它在某次提交里悄悄漂移。",
+                "应当显式走一次基线评审再调阈值，而不是让它在某次提交里悄悄漂移。",
             )
         )
 
@@ -386,16 +386,16 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                 skipped=True,
                 message="未设置基线，跳过劣化对比（首次运行请显式设置基线）",
                 action="先跑一轮并显式设基线："
-                       "`python platform_cli.py run --label X --set-baseline`；"
-                       "再 `python platform_cli.py baseline export --label X` 把快照提交进仓库，"
-                       "CI 里的 `baseline import` 就能拿到它。",
+                "`python platform_cli.py run --label X --set-baseline`；"
+                "再 `python platform_cli.py baseline export --label X` 把快照提交进仓库，"
+                "CI 里的 `baseline import` 就能拿到它。",
             )
         )
     else:
         degraded = [d for d in deltas if d.degraded]
-        detail = "；".join(
-            f"{d.metric} {d.pct_text()}（基线 {d.baseline:.1f}）" for d in degraded
-        ) or "全部指标在容忍带内"
+        detail = (
+            "；".join(f"{d.metric} {d.pct_text()}（基线 {d.baseline:.1f}）" for d in degraded) or "全部指标在容忍带内"
+        )
         if comparability is not None and comparability.verdict != "ok":
             # "无法判定"不是"通过"：passed=False + skipped=True，既不进 blocked，
             # 也不会在报告里长得像一条通过的规则。
@@ -409,7 +409,7 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                     observed={d.metric: d.current for d in deltas},
                     expected="两轮被测配置一致（items / 并发 / report_mode / scenario）",
                     action="基线不可比时不要读劣化百分比：要么用与基线相同的配置复跑本轮，"
-                           "要么用 `python -m platform_cli baseline set` 在当前配置上重建基线。",
+                    "要么用 `python -m platform_cli baseline set` 在当前配置上重建基线。",
                 )
             )
         else:
@@ -435,7 +435,7 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                     observed={d.metric: d.current for d in degraded},
                     expected=f"涨幅均 ≤ 容忍带",
                     action="定位这一步的提交：先用 `--scenario slow_report` 单场景复压，"
-                           "排除其它场景的干扰，再对照两次的 SQL 与索引。",
+                    "排除其它场景的干扰，再对照两次的 SQL 与索引。",
                 )
             )
 
@@ -452,7 +452,7 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                 observed=total,
                 expected=min_total,
                 action="样本太少时分位数不可信（P99 在 100 个样本里其实就是最大值）。"
-                       "通常说明压测时长不够或服务已经卡死。",
+                "通常说明压测时长不够或服务已经卡死。",
             )
         )
 
@@ -470,7 +470,7 @@ def evaluate_perf(run_metrics: dict, baseline: dict | None, deltas: list, rules:
                 observed=round(ratio, 3),
                 expected=p99_ratio_max,
                 action="长尾比中位数更能反映用户体感。比值偏高通常指向锁等待、"
-                       "GC 停顿或某个慢查询偶发命中——去查 max_ms 附近那几次请求。",
+                "GC 停顿或某个慢查询偶发命中——去查 max_ms 附近那几次请求。",
             )
         )
     return report
@@ -533,12 +533,12 @@ def evaluate_probe(report_p95: dict, rules: dict, sample_totals: dict | None = N
                     passed=False,
                     severity=WARNING,
                     message=f"样本量不足（建议每种模式 ≥ {min_total} 次）：{detail}"
-                            "—— 分位数按 nearest-rank 取值，样本越少分位数越贴近最大值"
-                            "（N ≤ 20 时「P95」就是最大值），本轮耗时结论不足以支撑判定",
+                    "—— 分位数按 nearest-rank 取值，样本越少分位数越贴近最大值"
+                    "（N ≤ 20 时「P95」就是最大值），本轮耗时结论不足以支撑判定",
                     observed=starved,
                     expected=min_total,
                     action="加长时长或加大并发（如 `--duration 60`）后再看结论；"
-                           "本轮的数字可以记录趋势，但不要用它下「n1 比 agg 慢多少倍」的结论。",
+                    "本轮的数字可以记录趋势，但不要用它下「n1 比 agg 慢多少倍」的结论。",
                 )
             )
 
@@ -550,8 +550,7 @@ def evaluate_probe(report_p95: dict, rules: dict, sample_totals: dict | None = N
             # 措辞要看样本数：N ≤ 20 时 nearest-rank 的 P95 确实就是最大值，
             # 样本多一些时只是"贴近最大值"。两种都必须说清"别当最终依据"。
             near = "该 P95 实为最大值" if n_n1 <= 20 else "分位数已明显贴近最大值"
-            caveat = (f"；⚠ 本轮 n1 只有 {n_n1} 个样本（建议 ≥ {min_total}），"
-                      f"{near}，此判定不可作为最终依据")
+            caveat = f"；⚠ 本轮 n1 只有 {n_n1} 个样本（建议 ≥ {min_total}），{near}，此判定不可作为最终依据"
         report.results.append(
             RuleResult(
                 rule_id="P1-n1-probe",
@@ -561,8 +560,8 @@ def evaluate_probe(report_p95: dict, rules: dict, sample_totals: dict | None = N
                 observed=observed,
                 expected=max_p95,
                 action="`/api/reports/slow-by-supplier` 的 n1 实现是**故意保留的性能缺陷探针**。"
-                       "正常情况下走的是 agg 实现；这条红了说明有人把默认实现切回了 N+1，"
-                       "或者数据量增长让 N+1 真的爆了。",
+                "正常情况下走的是 agg 实现；这条红了说明有人把默认实现切回了 N+1，"
+                "或者数据量增长让 N+1 真的爆了。",
             )
         )
 
@@ -577,15 +576,15 @@ def evaluate_probe(report_p95: dict, rules: dict, sample_totals: dict | None = N
                 message=f"N+1 / agg 耗时比 {ratio:.1f}×（阈值 {ratio_max}×）",
                 observed=round(ratio, 2),
                 expected=ratio_max,
-                action="这个比值是「改成聚合查询能省多少」的直接证据，"
-                       "写进优化提案比单说「慢」有说服力得多。",
+                action="这个比值是「改成聚合查询能省多少」的直接证据，写进优化提案比单说「慢」有说服力得多。",
             )
         )
     return report
 
 
-def evaluate_suite(passed: int, failed: int, errors: int, flaky: list[dict], rules: dict,
-                   exit_code: int | None = None) -> GateReport:
+def evaluate_suite(
+    passed: int, failed: int, errors: int, flaky: list[dict], rules: dict, exit_code: int | None = None
+) -> GateReport:
     """功能用例门禁：通过率 + flaky 用例数量 + 子进程退出码。
 
     ## 0 个用例不能算 100% 通过
@@ -621,7 +620,7 @@ def evaluate_suite(passed: int, failed: int, errors: int, flaky: list[dict], rul
                 observed=None,
                 expected=min_rate,
                 action="先确认用例是不是真的被收集到了（`-p metrics.pytest_plugin` 是否生效、目标路径是否正确）。"
-                       "把 0/0 当通过，等于给「环境没准备好」发了一张通行证。",
+                "把 0/0 当通过，等于给「环境没准备好」发了一张通行证。",
             )
         )
     else:
@@ -635,7 +634,7 @@ def evaluate_suite(passed: int, failed: int, errors: int, flaky: list[dict], rul
                 observed=round(rate, 4),
                 expected=min_rate,
                 action="先看失败原因归类：断言失败是行为变更，报错是环境/依赖问题。"
-                       "后者重跑一次，前者必须先确认是「预期变更」还是「缺陷」。",
+                "后者重跑一次，前者必须先确认是「预期变更」还是「缺陷」。",
             )
         )
 
@@ -652,12 +651,12 @@ def evaluate_suite(passed: int, failed: int, errors: int, flaky: list[dict], rul
                 passed=not broken,
                 severity=BLOCKING,
                 message=f"pytest 退出码 {exit_code}（0=全过，1=有用例失败）"
-                        + ("；注意：退出码为 0/1 之外说明本轮**没有正常跑完**。" if broken else ""),
+                + ("；注意：退出码为 0/1 之外说明本轮**没有正常跑完**。" if broken else ""),
                 observed=exit_code,
                 expected="0 或 1",
                 action="退出码 5 通常是没收集到用例（路径/插件配置问题），"
-                       "2 是中断（超时或 Ctrl-C），3 是 pytest 内部错误，4 是命令行用法错误。"
-                       "这些都不代表「代码有问题」，但都代表「本轮结论无效」，必须查清楚再放行。",
+                "2 是中断（超时或 Ctrl-C），3 是 pytest 内部错误，4 是命令行用法错误。"
+                "这些都不代表「代码有问题」，但都代表「本轮结论无效」，必须查清楚再放行。",
             )
         )
 
@@ -673,7 +672,7 @@ def evaluate_suite(passed: int, failed: int, errors: int, flaky: list[dict], rul
                 observed=n,
                 expected=max_flaky,
                 action="flaky 用例会训练团队忽略红灯。要么修好（查出真实的时序/数据依赖），"
-                       "要么删掉——留在那里是最坏的选择。",
+                "要么删掉——留在那里是最坏的选择。",
             )
         )
     return report

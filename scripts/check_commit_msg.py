@@ -31,8 +31,17 @@ from pathlib import Path
 
 # Conventional Commits 的类型白名单。与 commitlint.config.mjs 的 type-enum 一一对应。
 TYPES = (
-    "feat", "fix", "docs", "style", "refactor",
-    "perf", "test", "build", "ci", "chore", "revert",
+    "feat",
+    "fix",
+    "docs",
+    "style",
+    "refactor",
+    "perf",
+    "test",
+    "build",
+    "ci",
+    "chore",
+    "revert",
 )
 
 # type(scope)!: subject
@@ -88,37 +97,23 @@ def check(message: str) -> list[str]:
 
     m = HEADER_RE.match(header)
     if m is None:
-        problems.append(
-            "标题不符合 `<type>(<scope>): <subject>` 格式。"
-            "例如 `fix(metrics): 修分位数合并口径`。"
-        )
+        problems.append("标题不符合 `<type>(<scope>): <subject>` 格式。例如 `fix(metrics): 修分位数合并口径`。")
         return problems
 
     if m.group("type") not in TYPES:
-        problems.append(
-            f"未知的 type：`{m.group('type')}`。"
-            f"只允许：{', '.join(TYPES)}。"
-        )
+        problems.append(f"未知的 type：`{m.group('type')}`。只允许：{', '.join(TYPES)}。")
 
     subject = m.group("subject").strip()
     if not subject:
         problems.append("subject 不能为空。")
     elif subject.endswith(BAD_SUBJECT_TAILS):
-        problems.append(
-            f"subject 不应以标点结尾：`{subject}`。"
-            "标题是列表项不是句子，结尾标点会在 log 里显得很吵。"
-        )
+        problems.append(f"subject 不应以标点结尾：`{subject}`。标题是列表项不是句子，结尾标点会在 log 里显得很吵。")
     elif subject[0].isupper() and subject.isascii():
         # 只对纯 ASCII 标题提醒首字母大写：中文没有大小写概念。
-        problems.append(
-            f"subject 应以小写开头（当前 `{subject}`）。"
-            "Conventional Commits 的 subject 是短语不是句子。"
-        )
+        problems.append(f"subject 应以小写开头（当前 `{subject}`）。Conventional Commits 的 subject 是短语不是句子。")
 
     if len(lines) > 1 and lines[1].strip():
-        problems.append(
-            "标题与正文之间必须空一行（git 靠这个空行区分 subject 与 body）。"
-        )
+        problems.append("标题与正文之间必须空一行（git 靠这个空行区分 subject 与 body）。")
 
     return problems
 
@@ -141,8 +136,7 @@ def main(argv: list[str]) -> int:
     for p in problems:
         print(f"  - {p}", file=sys.stderr)
     print(
-        "\n规范见 CONTRIBUTING.md「提交信息规范」；"
-        "本检查是同名 Node 配置 commitlint.config.mjs 的等价实现。",
+        "\n规范见 CONTRIBUTING.md「提交信息规范」；本检查是同名 Node 配置 commitlint.config.mjs 的等价实现。",
         file=sys.stderr,
     )
     return 1
