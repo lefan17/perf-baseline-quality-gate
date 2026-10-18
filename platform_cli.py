@@ -820,6 +820,14 @@ def cmd_trend(args: argparse.Namespace) -> int:
     # 不写死 kind='perf'：早先这里硬编码了 perf，于是 probe 类型的运行
     # 在趋势里永远查不到（跑了十几轮压测探针，趋势页却是空的）。
     # label 本身已经足够定位一组运行，kind 只当可选过滤。
+    #
+    # 必须先 init_db()：裸 sqlite3.connect() 不会建表，所以在**干净环境**
+    # （刚 clone、QUALITY_DB 指向一个新路径、CI 上一个全新的 job）里跑
+    # `trend` 会直接抛 `sqlite3.OperationalError: no such table: runs` ——
+    # 而不是它本该给的那句「没有 label=… 的历史记录」。同一个文件的
+    # run/suite/probe/noise/prune 都调了 init_db，只有这道只读命令漏了；
+    # 偏偏它是最可能被人在空仓库上第一个跑的命令。
+    store.init_db()
     with store.tx() as conn:
         rows = [
             dict(r)

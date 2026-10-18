@@ -199,7 +199,22 @@ jobs:
             --cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli \
             --cov-report=term-missing \
             --cov-report=xml \
+            --cov-report=json:.coverage.json \
             --cov-fail-under=40
+
+      # 仓库级 40% 的门槛**结构性看不见单模块失守**：`platform_cli.py`
+      # 曾经在 646 条语句上只有 23.1% 覆盖，而全仓 58.79% 照样过闸 ——
+      # 一个大文件掉光，被十几个小文件平均掉了。
+      #
+      # 这一步按文件判，是独立的一步（不是 `|| true`，也不是
+      # `continue-on-error`）：覆盖率门禁一旦变成"只报告"，就等于没有门禁，
+      # 本仓的 `ruff format` 就曾长期 COE，最后没人看那条黄条。
+      #
+      # 门槛值与演进记录在 pyproject.toml 的 `[tool.coverage.perfile]`。
+      # 它是**棘轮**：先抓当前最差的那个文件，修完再抬，不是一次性设到
+      # 80 分然后在第一次红灯时被绕过。
+      - name: per-file 覆盖率门槛（棘轮，阻塞）
+        run: python scripts/check_coverage.py --report .coverage.json
 
       - name: 上传覆盖率报告
         if: always()

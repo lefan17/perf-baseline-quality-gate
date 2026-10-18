@@ -689,19 +689,78 @@ profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相
 - README §6 引用的 **65%** 是另一个口径，**不要拿它和 40 比**，
   那等于拿"含自学题在内的高分"去比"专业课及格线"。
 
-已知盲区（**不假装它们不存在**）：
+### 2.1 per-file 覆盖率门槛：40% 看不见的那种失守
 
-| 模块 | 覆盖 | 为什么低 |
+仓库级的 40% 有一个**结构性的盲区**：它按语句数加权平均，所以一个大文件
+整体掉光，会被十几个小文件平均掉。
+
+这不是假设。加这道门禁之前的实测：
+
+```
+platform_cli.py   23.1%  (646 语句)   ← 平台的主入口
+全仓              58.79%              ← 照样过 40 那道闸
+```
+
+646 条语句、23% 覆盖，意味着 `run` / `suite` / `probe` / `prune` / `baseline`
+这些**真正在用的子命令一条断言都没有**。而全仓数字一直是绿的。
+
+**`fail_under` 这个配置项在 coverage 7.16.2 里只有全局一个**（
+`[a for a in dir(CoverageConfig()) if "fail" in a]` → `['fail_under']`），
+没有 per-file 版本。所以这道门禁是 `scripts/check_coverage.py`：读
+`--cov-report=json` 的产物，逐个文件比对 `[tool.coverage.perfile]` 里的门槛。
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `fail_under` | **60** | 棘轮：当前最差入选文件 - 2pp |
+| `min_statements` | 10 | 小于这个数的文件不参与（一个 5 行的 `__init__` 掉到 0% 没有信息量） |
+| `exclude` | 5 项 | 每项都带理由，见 `pyproject.toml` |
+
+排除的五项和各自的理由：
+
+| 排除项 | 为什么不能算 |
+|---|---|
+| `sut/app.py`、`sut/db.py`、`sut/seed.py` | 跑在**子进程**里（`[sys.executable, "-m", "sut.seed"]` 与 `subprocess.Popen`），父进程的 coverage 追踪不到。硬拉只能改被测进程的启动方式 |
+| `metrics/pytest_plugin.py` | 由 `platform_cli suite` 以 `-p metrics.pytest_plugin` 在子进程里动态加载，本进程内从不 import |
+| `bench/scenarios.py` | 场景构造器，每一行都在**真压测**里被执行，但单测不能真压（一条 8 秒 × 多梯度）。给它写测试只能靠 Runner 替身断言参数被传进去了 —— 那测的是替身 |
+
+**这是一条棘轮，不是一个目标值。** 规则写在 `pyproject.toml` 的注释里：
+门槛 = 当前最差入选文件 - 2pp，修完再抬，每轮只抬一次。
+
+为什么不一次性设到 80：那样第一周就红，红了三天的门禁通常的结局是被
+`continue-on-error` 绕过 —— 而**本仓有前例**，`ruff format` 曾长期 COE，
+最后没人看那条黄条。一个被绕过的门禁比没有门禁更坏，因为它会让人以为
+有保护。
+
+抬升记录（每次抬升都对应一批真补的测试，不是重设数字）：
+
+| 门槛 | 触发 |
+|---:|---|
+| 22 | 首次启用，只抓 `platform_cli.py` 一个（当时 23.1%） |
+| 60 | 补完下表三个文件之后，`platform_cli.py` 成了入选文件里最低的一个（62.4%） |
+
+补上来的三个文件（**每一个都是为了消灭一种"红了才知道"的盲区**）：
+
+| 文件 | 条数 | 补掉了什么 |
 |---|---:|---|
-| `sut/app.py`、`sut/db.py`、`sut/seed.py` | **0%** | SUT 跑在**子进程**里，coverage 默认不追踪子进程 |
-| `metrics/pytest_plugin.py` | **0%** | 只在 `suite` 子命令起的 pytest 子进程里被加载 |
-| `platform_cli.py` | **23%** | 压测主路径（`run` / `noise` / `prune`）要真起服务，用例只覆盖参数解析与纯函数 |
-| `metrics/store.py` | **100%** | — |
-| `sut/server_ctl.py` | **81%** | — |
+| `tests/test_cli_commands.py` | 28 | 走 `main()` 真调每个子命令。当场抓到一个真 bug：`trend` 在干净库上抛 `no such table: runs` —— 而它是最可能被人在空仓库上第一个跑的命令 |
+| `tests/test_engine_runner.py` | 13 | `Runner` 从没被真跑过（只测了分位数等纯函数）。起一个 stdlib `ThreadingHTTPServer`，真开线程池、真丢热身样本、真把 500 记成失败样本 |
+| `tests/test_dashboard_api.py` | 25 | `/api/gate` 等端点是**门禁对外的唯一门面**，此前一条都没测。包括"无梯度数据必须判 blocked"这条历史事故的回归 |
+
+| 模块 | 加门禁前 | 现在 |
+|---|---:|---:|
+| `platform_cli.py` | 23.1% | **62.4%** |
+| `bench/engine.py` | 52.3% | **98.4%** |
+| `dashboard/app.py` | 55.9% | **98.0%** |
+| `metrics/gate.py` | 62.7% | 68.1% |
+| `metrics/analysis.py` | 70.1% | 70.1% |
+| 全仓（门槛口径） | 58.79% | **66%** |
+| 用例数 | 188 | **279** |
 
 提高覆盖率不是目标本身。把 `sut/*` 从 0% 拉起来需要子进程追踪方案
 （`coverage run --parallel-mode` 之类），而那会改变压测进程的启动路径 ——
 在一个性能平台上，"为了覆盖率改变被测进程的启动方式"是典型的指标反噬。
+这四个文件被**显式排除并写明理由**，而不是让它们悄悄拉低平均值后
+再把全局门槛调低来"修好"它。
 
 ⚠️ 还有一个静默坑：写 `--cov` 时**必须重复写多个 `--cov=xxx`**。
 `--cov=a,b` 这种逗号写法在 pytest-cov 7.1.0 下**不报错、只是收集不到数据**，

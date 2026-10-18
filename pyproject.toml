@@ -247,3 +247,65 @@ disable_error_code = ["assignment"]
 [tool.coverage.report]
 fail_under = 40
 show_missing = true
+
+# --------------------------------------------------------------------------- #
+# per-file 覆盖率门禁：拦住「单个模块整体失守」。
+#
+# 上面的 fail_under = 40 是**仓库级**的，能拦住「整个仓库都烂了」，但结构上
+# 看不见单点失守 —— 一个 645 行的 platform_cli.py 只跑通 23%，总覆盖率仍有
+# 45.6%、稳稳高于 40。反过来说，把 metrics/store.py 从 100% 拉到 100%（它已经
+# 是满的）也补不回来一个模块的崩塌。
+#
+# coverage 7.16.2 的 CoverageConfig 只有全局 fail_under，没有 per-file 版本
+# （实测 [a for a in dir(CoverageConfig()) if 'fail' in a.lower()] ==
+# ['fail_under']），所以只能读 --cov-report=json 的产物自己判。判定逻辑在
+# scripts/check_coverage.py，与 agent-test-hub、fullstack-test-framework 里
+# 那两个是同一份（三个仓库互相独立、没有共享包，只能逐字复制；改一处要同步
+# 另两处）。
+#
+# ⚠️ fail_under 是**棘轮不是目标**：取「当前最差文件 - 2pp」，修完再抬，
+#    每轮只抬一次。一次性拉到 80 会制造长期红灯，最后一定被
+#    continue-on-error 绕过 —— 比没有门禁更坏（本仓有前例：ruff format
+#    曾长期挂着 COE，2026-10-18 才改回阻塞）。
+# --------------------------------------------------------------------------- #
+[tool.coverage.perfile]
+# 这是一条**棘轮**，不是一个目标值。规则：门槛 = 当前最差入选文件 - 2pp，
+# 修完再抬，每轮只抬一次。写在这里是为了让下一个改代码的人知道该怎么动它，
+# 而不是看到红灯就把数字调低。
+#
+# 演进记录（每次抬升都对应一批真补的测试，不是重设）：
+#   22 → 本仓第一次启用：只抓 platform_cli.py 一个（当时 23.1%）。
+#   60 → 补了三个测试文件之后：
+#          tests/test_cli_commands.py（28 条走 main() 的集成测试）
+#            → platform_cli.py 23.1% → 62.4%
+#          tests/test_engine_runner.py（13 条，起真 stdlib HTTP 服务跑真
+#            线程池）→ bench/engine.py 52.3% → 98.4%
+#          tests/test_dashboard_api.py（25 条直接调端点）→ dashboard/app.py
+#            59.2% → 98.0%
+#        platform_cli.py 62.4% 成了入选文件里最低的一个，取 60 = 62.4 - 2.4，
+#        给它留下一次小改动的余量。bench/scenarios.py 37.9% 与四个 0% 文件
+#        见 exclude 里各自的理由。
+fail_under = 60
+min_statements = 10
+exclude = [
+  # 子进程里跑的代码：由 sut/server_ctl.py 用 [sys.executable, "-m", "sut.seed"]
+  # 与 subprocess.Popen 起在**另一个解释器**里，父进程的 coverage 追踪不到。
+  # 硬拉覆盖率只能改被测进程的启动方式（插 sitecustomize / 传 --cov 进去），
+  # 那是典型的指标反噬：为了数字好看去动生产启动路径，而这条路径正是被
+  # 性能测试当作「真实用户请求链路」在量的。README 六节已写明这个取舍。
+  "sut/app.py",
+  "sut/db.py",
+  "sut/seed.py",
+  # 由 platform_cli.py 以 `-p metrics.pytest_plugin` 动态加载（子进程里的
+  # pytest 插件），本进程内不 import，所以无论如何都是 0%。给它单写测试等于
+  # 测一个「只在别人的 pytest 里运行」的插件，价值低于它带来的维护成本；
+  # 它的真实行为由 `platform_cli suite` 的端到端用例覆盖。
+  "metrics/pytest_plugin.py",
+  # bench/scenarios.py 里是没有独立判据的场景构造器：build_engine_mix /
+  # configure_item_range / engine_single 的每一行都在**真压测**里被执行，
+  # 但本仓的单元测试不能真压（一条 8 秒 × 多个梯度）。给它们写测试只能靠
+  # 造 Runner 替身断言「参数被传进去了」，那测的是替身不是场景。
+  # 它 37.9% 的低分因此是**采样方式**的产物，不是质量缺陷；
+  # 真正的行为证据在 n1-probe job 与 R3 判定里。
+  "bench/scenarios.py",
+]
