@@ -70,6 +70,9 @@ def _collect(base_url: str, path: str, n: int = SAMPLES) -> list[float]:
     在分母（快接口）上占比更大。
     """
     session = requests.Session()
+    # 见 `_direct_session` 的说明：本机开代理会把固定成本加到每个请求上，
+    # 而比例型断言对这个固定成本极其敏感（分母受害更大）。
+    session.trust_env = False
     try:
         for _ in range(WARMUP):
             session.get(f"{base_url}{path}", timeout=30)

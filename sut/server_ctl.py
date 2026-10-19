@@ -102,11 +102,24 @@ class SutHandle:
             return ""
 
 
+def _direct_get(url: str, timeout: float) -> requests.Response:
+    """GET，且不读 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`。
+
+    探测的是本机刚拉起的被测服务。经代理绕一圈时，代理的响应会让
+    「还没就绪」判不出来，或者更糟——代理活着并回了 502/503，于是
+    `wait_ready` 拿到一个**不属于被测服务的状态码**，把没起来的服务判成
+    "起来了但有问题"，后面所有压力数据和门禁结论都建在这个误判上。
+    """
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.get(url, timeout=timeout)
+
+
 def wait_ready(base_url: str, timeout_s: float = 40.0) -> bool:
     deadline = time.perf_counter() + timeout_s
     while time.perf_counter() < deadline:
         try:
-            if requests.get(f"{base_url}/healthz", timeout=1.0).status_code == 200:
+            if _direct_get(f"{base_url}/healthz", timeout=1.0).status_code == 200:
                 return True
         except requests.RequestException:
             time.sleep(0.15)

@@ -554,7 +554,13 @@ def _fetch_report_rows(base_url: str, timeout_s: float) -> list[dict] | None:
     import requests
 
     try:
-        resp = requests.get(f"{base_url}/api/reports/slow-by-supplier", params={"window_days": 30}, timeout=timeout_s)
+        with requests.Session() as session:
+            session.trust_env = False
+            resp = session.get(
+                f"{base_url}/api/reports/slow-by-supplier",
+                params={"window_days": 30},
+                timeout=timeout_s,
+            )
         resp.raise_for_status()
         return resp.json().get("rows", [])
     except Exception as exc:  # noqa: BLE001 - 取数失败不该让整轮探针崩掉
