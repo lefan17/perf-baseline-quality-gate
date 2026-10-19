@@ -210,6 +210,9 @@ class Runner:
         if spawn_delay:
             time.sleep(spawn_delay)
         session = requests.Session()
+        # 压测打的是本机 SUT。代理会把它变成"代理的性能"：延迟里混进代理
+        # 转发的开销，而 P95/尾比这些数字正是本仓全部结论的来源。
+        session.trust_env = False
         session.headers.update({"User-Agent": "perf-baseline-platform/1.0", "Connection": "keep-alive"})
         idx = worker_id
         try:
