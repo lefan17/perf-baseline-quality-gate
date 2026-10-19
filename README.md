@@ -136,7 +136,7 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（188 passed，约 80 秒）
+# 2. 跑平台自身的测试（279 passed，约 100 秒）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -481,7 +481,7 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-188 passed in ~79s
+279 passed in ~101s
 ```
 
 | 测试文件 | 用例数 | 覆盖 |
@@ -495,7 +495,11 @@ $ pytest tests/ -q
 | `test_r3_end_to_end.py` | 2 | R3 端到端：真的压一轮、真的比基线、真的会变红（`sut` + `perf` 标记） |
 | `test_rules_single_source.py` | 10 | 阈值只有一个住址（`gate_rules.yaml`），改 YAML 真的会改判定 |
 | `test_baseline_snapshot.py` | 26 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 / 记的是量出基线的机器 / 只报数模式 |
-| **合计** | **188** | |
+| `test_check_coverage_script.py` | 25 | 门禁脚本自身的契约：配置缺失要退 1、排除路径写错要报错、失败按百分比升序、JSON 里改低 1pp 必须被抓到 |
+| `test_cli_commands.py` | 28 | 走 `main()` 真调每个子命令（当场抓到 `trend` 在干净库上抛 `no such table`） |
+| `test_engine_runner.py` | 13 | `Runner` 真跑：起 stdlib `ThreadingHTTPServer`、真开线程池、真丢热身样本、真把 500 记成失败样本 |
+| `test_dashboard_api.py` | 25 | 看板对外端点的契约（本仓没装 httpx，直接调端点函数） |
+| **合计** | **279** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -807,7 +811,7 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 格式检查等于没有格式检查，没人会因为一条黄色警告去改空白。当天在本机跑了
 `ruff format .`，**17 个文件被重排、21 个已合规**，重排后 `ruff format --check .`
 是 **38 files already formatted**，`pytest tests/ -q` 仍是 180 passed（当时的口径；同一天
-后来又补了看板静态导出的 8 条测试，现在合计 **188 passed**）、
+后来又补了看板静态导出的 8 条测试到 188，再之后补 per-file 门禁那三组测试到 **279**）、
 `mypy` 仍是 16 source files 零问题。既然存量已经清零，就没有理由再让它非阻塞：
 现在这一步与 `ruff check .`、`mypy` 一样是**阻塞项**，与
 `fullstack-test-framework` 的 `lint` job 同一口径。改动基本落在换行与缩进
