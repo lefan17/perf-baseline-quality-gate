@@ -723,6 +723,21 @@ platform_cli.py   23.1%  (646 语句)   ← 平台的主入口
 | `metrics/pytest_plugin.py` | 由 `platform_cli suite` 以 `-p metrics.pytest_plugin` 在子进程里动态加载，本进程内从不 import |
 | `bench/scenarios.py` | 场景构造器，每一行都在**真压测**里被执行，但单测不能真压（一条 8 秒 × 多梯度）。给它写测试只能靠 Runner 替身断言参数被传进去了 —— 那测的是替身 |
 
+**本地核对必须抄 CI 的 `--cov=` 列表，不能图省事写 `--cov=.`。** 这是我自己踩的坑：
+本地手跑 `--cov=.` 得到「参与 23 个文件」，CI 日志是「参与 8 个文件」，两个数字差了
+近三倍，而我先是怀疑 CI 漏跑了测试。真相是 `--cov=.` 把 `tests/` 本身也算进了分母
+（测试文件对自己 100% 覆盖，看着无害），而 CI 口径是显式列业务目录：
+
+```
+python -m pytest tests/ -q \
+  --cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli \
+  --cov-report=json:.coverage.json
+python scripts/check_coverage.py --report .coverage.json
+```
+
+参与判定的 8 个文件，就是被追踪的 13 个文件里过了 `min_statements` 又不是排除项的那些。
+**同一个门槛配两套口径，等于有两个都不可信的数字。**
+
 **这是一条棘轮，不是一个目标值。** 规则写在 `pyproject.toml` 的注释里：
 门槛 = 当前最差入选文件 - 2pp，修完再抬，每轮只抬一次。
 
