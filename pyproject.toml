@@ -130,7 +130,10 @@ known-first-party = ["bench", "dashboard", "metrics", "sut"]
 # 也不用 `# type: ignore` 在源码里撒点 —— 撒点之后没人知道还剩多少真问题。
 [tool.mypy]
 python_version = "3.12"
-files = ["bench", "metrics", "sut", "dashboard", "platform_cli.py"]
+# scripts/proxy_probe.py 是唯一被点名纳入的脚本：它是会被人照着跑、
+# 并且要判断「探针结果是否可信」的测量工具，值一份类型检查。
+# 其余 scripts/check_*.py 是门禁脚本，纳入要连着清一批存量问题，单独排期。
+files = ["bench", "metrics", "sut", "dashboard", "platform_cli.py", "scripts/proxy_probe.py"]
 exclude = ["^\\.venv/", "^tests/"]
 
 # 必需：仓库里 bench/、metrics/ 等都是「无 __init__.py 的 src 布局同名包」，
