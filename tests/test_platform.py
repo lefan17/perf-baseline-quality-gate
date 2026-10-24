@@ -543,6 +543,82 @@ class TestTailRatioIsMeasuredOnOneStep:
         assert merged["max_ms"] == 400.0
 
 
+class TestAbsoluteP95UsesWorstStep:
+    """R2 的绝对 P95 必须看**最慢的那一级**，不是尾比最大的那一级。
+
+    与上一个类同源：`p95_ms` 为了让 R5 的 P99/P95 成对取自同一梯度，
+    选的是「比值最大」的那一级，它**不一定是绝对值最大的**。
+    拿它去判 R2 的 300ms 绝对阈值，会在「某级整体偏慢但尾比平」时漏报。
+
+    构造（两个梯度都真实存在）：
+
+        梯度1  P95=350  P99=400  → 比值 1.14
+        梯度2  P95=200  P99=310  → 比值 1.55  ← merge 选它
+
+    旧口径：R2 看到 200ms < 300ms → **passed**（漏报，实际有一级已 350ms）
+    新口径：取 max(200, 350) = 350ms > 300ms → **FAIL**
+    """
+
+    ROWS = [
+        {
+            "total": 1000,
+            "duration_s": 10.0,
+            "error_count": 0,
+            "rps": 100.0,
+            "mean_ms": 120.0,
+            "p50_ms": 200.0,
+            "p90_ms": 300.0,
+            "p95_ms": 350.0,
+            "p99_ms": 400.0,
+            "max_ms": 500.0,
+            "max_inflight": 10,
+        },
+        {
+            "total": 1000,
+            "duration_s": 10.0,
+            "error_count": 0,
+            "rps": 100.0,
+            "mean_ms": 90.0,
+            "p50_ms": 120.0,
+            "p90_ms": 180.0,
+            "p95_ms": 200.0,
+            "p99_ms": 310.0,
+            "max_ms": 330.0,
+            "max_inflight": 20,
+        },
+    ]
+
+    def test_two_scopes_are_reported_separately(self):
+        merged = analysis.merge_step_rows(self.ROWS)
+        # 尾比口径：比值最大的那一级（梯度2）
+        assert merged["p95_ms"] == 200.0
+        # 绝对值口径：最慢的那一级（梯度1）
+        assert merged["p95_abs_max_ms"] == 350.0
+        assert merged["p99_abs_max_ms"] == 400.0
+
+    def test_absolute_threshold_reads_the_slowest_step(self):
+        """判别力所在：只喂 `p95_ms` 的旧口径下这条会红。"""
+        merged = analysis.merge_step_rows(self.ROWS)
+        run = _perf_run(
+            p95_ms=merged["p95_ms"],
+            p99_ms=merged["p99_ms"],
+            p95_abs_max_ms=merged["p95_abs_max_ms"],
+        )
+        r2 = next(r for r in gate.evaluate_perf(run, None, [], RULES).results if r.rule_id == "R2-p95-absolute")
+        assert not r2.passed, "有一级已 350ms，绝对阈值 300ms 必须拦住"
+        assert r2.observed == 350.0
+
+    def test_old_baseline_without_the_new_key_still_works(self):
+        """老基线没有 `p95_abs_max_ms`，退化回 `p95_ms`，不强制重建基线。"""
+        r2 = next(
+            r
+            for r in gate.evaluate_perf(_perf_run(p95_ms=250.0), None, [], RULES).results
+            if r.rule_id == "R2-p95-absolute"
+        )
+        assert r2.passed
+        assert r2.observed == 250.0
+
+
 class TestProbeGate:
     def test_healthy_ratio_passes(self):
         assert not gate.evaluate_probe({"agg": 10.0, "n1": 30.0}, RULES).blocked

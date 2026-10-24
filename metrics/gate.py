@@ -351,15 +351,32 @@ def evaluate_perf(
         )
 
     # R2 绝对 P95 —— 与基线无关的兜底线，防止"基线本身已经烂了"。
+    #
+    # 这里故意取「尾比口径」与「绝对值口径」两者中更大的那个。
+    # 原因：整轮汇总里的 `p95_ms` 是**尾比最大的那一级**（为了让 R5
+    # 的 P99/P95 成对取自同一梯度），它不一定是**最慢的那一级**。
+    # 只拿 `p95_ms` 判绝对阈值，会在"某级整体偏慢但尾比平"时漏报：
+    #
+    #   梯度1  P95=110  P99=145  比值 1.32
+    #   梯度2  P95=74   P99=110  比值 1.49  ← p95_ms 选它
+    #   R2 看到 74ms < 300ms 判过，实际已有一级 110ms。
+    #
+    # 老基线没有 `p95_abs_max_ms` 这个键，用 `.get(...)` 退化回 `p95_ms`，
+    # 不强制重建基线。
     max_p95 = thresholds.get("p95_ms_max")
     if max_p95 is not None:
-        observed = run_metrics.get("p95_ms", 0.0)
+        tail_p95 = run_metrics.get("p95_ms", 0.0)
+        abs_p95 = run_metrics.get("p95_abs_max_ms", tail_p95)
+        observed = max(tail_p95, abs_p95)
+        message = f"P95 {observed:.1f}ms（绝对阈值 {max_p95}ms）"
+        if abs_p95 > tail_p95:
+            message += f"；取自绝对值最大的梯度（尾比口径 {tail_p95:.1f}ms）"
         report.results.append(
             RuleResult(
                 rule_id="R2-p95-absolute",
                 passed=observed <= max_p95,
                 severity=BLOCKING,
-                message=f"P95 {observed:.1f}ms（绝对阈值 {max_p95}ms）",
+                message=message,
                 observed=observed,
                 expected=max_p95,
                 action="绝对阈值是兜底线。如果服务确实变重了（功能增加），"

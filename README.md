@@ -12,6 +12,9 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 那几行，所以发布前会先把 `gh-pages` 上的 `history.db` 取下来合并
 （`platform_cli.py report --merge-db`），否则"趋势"永远只有一个点。
 
+> 📊 **数字从哪来**：[`docs/evidence/`](docs/evidence/) 固化了本仓库关键指标的来源、
+> 生成时间与复核命令。性能数字有多个口径（池化 vs 拐点），那里写清了哪个能外推、哪个不能。
+
 它不是"跑个 Locust 出张图"，而是回答三个具体问题：
 
 1. **这轮到底跑的是什么配置？** —— 配置与平台信息随每次运行入库，可回查。
@@ -26,6 +29,21 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 > 编排，从 OpenAPI 契约生成用例、执行、重试与缺陷归因）：接口自动化 → 性能与质量门禁 → Agent 自动测试。
 
 ---
+
+## 30 秒速览
+
+| 问题 | 答案 |
+|---|---|
+| **解决什么** | 「变慢了没有 / 和谁比 / 门禁到底拦不拦得住」——把性能从「跑个压测看个数字」变成 CI 里真能变红的判定 |
+| **压的是什么** | 内置被测服务（FastAPI + SQLite），**故意保留一个 N+1 缺陷**：`agg` 单条 SQL 聚合 vs `n1` 逐供应商查询，20k 数据下约 7.8× |
+| **多少条规则** | **12 条**：R1–R5（性能）+ P0–P3（探针）+ S1–S3（套件），阈值全部集中在 `gate_rules.yaml` |
+| **怎么证明门禁会红** | `tests/test_r3_end_to_end.py` 起真 CLI + 真 sqlite，把基线改快 10× 后断言报告出现 `[FAIL]`、退出码 1 |
+| **怎么跑** | `pip install -r requirements.txt` → `python platform_cli.py run --label local` |
+| **看什么** | [在线看板](https://lefan17.github.io/perf-baseline-quality-gate/)：趋势图、基线对比、门禁结果 |
+| **数字哪来的** | [`docs/evidence/summary.json`](docs/evidence/summary.json)：带 run_id、生成时间与复核命令 |
+| **哪些数字不能信** | [`docs/诚实边界.md`](docs/诚实边界.md)：单机引擎无分布式能力、SQLite 单写者、绝对数字不可外推（比例关系可以） |
+
+> 下面各节是完整推导。这一节只回答四件事：抓什么、怎么造缺陷、规则有几条、凭什么说它会红。
 
 ## 一、先说结论：这个平台抓到了什么
 

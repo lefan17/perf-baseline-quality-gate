@@ -519,6 +519,17 @@ def merge_step_rows(rows: list[dict]) -> dict:
     p95_worst = worst_tail[1] if worst_tail else 0
     p99_worst = worst_tail[2] if worst_tail else 0
 
+    # 绝对值最大的一级 —— 与上面的"比值最大那一级"是**两个不同口径**。
+    #
+    # 为什么必须两个都留：R5（尾比）要成对取自同一梯度，R2（绝对 P95）
+    # 要的是"最慢的那一级"。用同一个数喂两条规则，必然有一条不保守：
+    #   梯度1  P95=110  P99=145  比值 1.32
+    #   梯度2  P95=74   P99=110  比值 1.49  ← 比值最大，被 p95_ms 选中
+    #   R2 看到 74ms < 300ms 判过，而实际有一级已经 110ms。
+    # 两个口径都输出、各取所需，才既不让 R5 漏报长尾，也不让 R2 漏报整体偏慢。
+    p95_abs_max = max((r["p95_ms"] for r in rows), default=0)
+    p99_abs_max = max((r["p99_ms"] for r in rows), default=0)
+
     return {
         "total": total,
         "duration_s": duration,
@@ -530,6 +541,10 @@ def merge_step_rows(rows: list[dict]) -> dict:
         "p90_ms": max((r["p90_ms"] for r in rows), default=0),
         "p95_ms": p95_worst,
         "p99_ms": p99_worst,
+        # 绝对值口径，供给 R2 这类"绝对阈值"规则（见 gate.py R2 的注释）。
+        # 老基线与老库里没有这两个键，读取侧一律用 .get(..., 退化为 p95_ms)。
+        "p95_abs_max_ms": p95_abs_max,
+        "p99_abs_max_ms": p99_abs_max,
         "max_ms": max((r["max_ms"] for r in rows), default=0),
         # 实际在途取最大：它回答的是"压测机有没有成为瓶颈"，
         # 取整轮中并发真正打满的那一级才有意义。

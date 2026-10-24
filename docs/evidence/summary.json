@@ -1,0 +1,55 @@
+{
+  "schema": "evidence-summary@1",
+  "repo": "perf-baseline-quality-gate",
+  "collected_at": "2026-10-24T18:48:12+08:00",
+  "source": "baselines/ci-perf.json（CI 基线快照，入库文件）",
+  "produced_at": "2026-10-16T16:12:58+00:00",
+  "run_id": "perf-20261016-161127-180f9d",
+  "reproduce": "python -m platform_cli baseline set --label ci-perf（CI 内由 quality-gate.yml 执行）",
+  "metrics": {
+    "total": {
+      "rps": 433.4,
+      "p50_ms": 43.454,
+      "p90_ms": 91.128,
+      "p95_ms": 53.926,
+      "p99_ms": 81.065,
+      "max_ms": 224.371,
+      "error_rate": 0.0,
+      "requests": 5668,
+      "duration_s": 13.078,
+      "max_inflight": 20
+    },
+    "knee": {
+      "users": 20,
+      "rps": 385.304,
+      "p95_ms": 110.109,
+      "p99_ms": 145.982,
+      "reason": "每用户吞吐较峰值下降 60.0%（并持续到末级）"
+    },
+    "config": {
+      "items": 20000,
+      "report_mode": "agg",
+      "scenario": "(mix)",
+      "step_users": [
+        10,
+        20
+      ],
+      "step_duration_s": 8.0,
+      "think_time_s": 0.0
+    },
+    "platform": {
+      "python": "3.12.15",
+      "platform": "Linux-6.17.0-1022-azure",
+      "cpu_count": 4,
+      "fastapi": "0.143.0",
+      "uvicorn": "0.54.0",
+      "requests": "2.34.2",
+      "machine": "x86_64"
+    }
+  },
+  "notes": [
+    "绝对数字不可外推：单机 ThreadPoolExecutor 引擎、SQLite 单写者、Windows 本机，换机器/换并发都会变。可外推的是**比例关系**（例如同一配置下 agg 与 n1 的差距）。",
+    "total.p95=53.9ms 与 knee.p95=110.1ms 是两个不同口径：total 是全部样本池化，knee 是拐点那一档。引用时不要混用。",
+    "R2 的 300ms 绝对阈值对高并发档偏松，因为 merge 规则取的是最差梯度；这也是「阈值型门禁在压测上不如比例型敏感」的一个真实例子。"
+  ]
+}

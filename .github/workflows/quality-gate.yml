@@ -323,12 +323,23 @@ jobs:
       - name: 跑压测并判定门禁
         run: |
           # 退出码 0 = 放行，1 = 拦住（存在 blocking 未通过）
+          #
+          # R3 的开关按触发源分：push / PR 上 advisory，定时任务上 blocking。
+          # 理由：容忍带 10% 是在开发机上按 P95 轮间波动定的，runner 上 p99/max 的
+          # 波动远大于它（见 docs/已知问题.md P-16），所以日常流水线里 R3 拦人
+          # 会产生大量假红；但**一直 advisory 等于这条规则从未生效**。
+          # 折中：每周一 03:17 的定时任务上让它真实 blocking —— 宁可一周红一次
+          # 让人真去查，也不要一年下来一条红证据都没有。
+          R3_FLAG="--r3-advisory"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            R3_FLAG=""
+          fi
           python platform_cli.py run \
             --label ci-perf \
             --items 20000 \
             --step-users 10 20 \
             --step-duration 8 \
-            --r3-advisory
+            $R3_FLAG
 
       - name: 上传本轮报告
         if: always()

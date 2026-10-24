@@ -701,7 +701,13 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             return 2
         store.set_baseline("perf", args.label, run_id, metrics, config=_run_config(run_id))
         print(f"[baseline] kind=perf label={args.label} run_id={run_id}")
-        print(f"           p95={metrics['p95_ms']}ms p99={metrics['p99_ms']}ms rps={metrics['rps']}")
+        # 两个 P95 口径都印出来，否则设基线的人分不清存下的是
+        # 「尾比最大的梯度」还是「最慢的梯度」——R2 判的是后者。
+        abs_note = ""
+        abs_p95 = metrics.get("p95_abs_max_ms", metrics["p95_ms"])
+        if abs_p95 > metrics["p95_ms"]:
+            abs_note = f"（最慢梯度 p95={abs_p95}ms，R2 按它判）"
+        print(f"           p95={metrics['p95_ms']}ms{abs_note} p99={metrics['p99_ms']}ms rps={metrics['rps']}")
         print(f"           下一步：`baseline export --label {args.label}` 把快照提交进仓库，CI 才能拿到这条基线")
         emit(args, {"action": "set", "kind": "perf", "label": args.label, "run_id": run_id, "metrics": metrics})
         return 0
