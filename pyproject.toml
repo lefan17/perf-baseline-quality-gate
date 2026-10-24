@@ -296,6 +296,11 @@ exclude = [
   "sut/app.py",
   "sut/db.py",
   "sut/seed.py",
+  # 缓存层同样只在外层进程（uvicorn 子进程）里执行：父进程这边只 import 一次，
+  # 业务路径全在子进程，所以本进程的 coverage 结构上到不了它。
+  # 它的**行为**由 tests/test_cache_layer.py 通过 HTTP 验证（11 条：命中、
+  # 负缓存、写失效、无 Redis 降级），覆盖的是行为而不是行数 —— 同 sut/app.py。
+  "sut/cache.py",
   # 由 platform_cli.py 以 `-p metrics.pytest_plugin` 动态加载（子进程里的
   # pytest 插件），本进程内不 import，所以无论如何都是 0%。给它单写测试等于
   # 测一个「只在别人的 pytest 里运行」的插件，价值低于它带来的维护成本；

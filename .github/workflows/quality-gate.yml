@@ -152,6 +152,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: lint
+    # 缓存层用例需要一台真的 Redis。用 service container 而不是 fakeredis：
+    # 缓存探针要量的是**跨进程往返**（socket + 协议编解码），
+    # 内存里的假实现没有这一段，测出来的延迟不具参考价值。
+    # 探测不到 Redis 时那批用例会自动 skip（见 tests/test_cache_layer.py），
+    # 所以 service 起不来不会让流水线红 —— 但也就没有人替我们看着缓存了，
+    # 这正是要把它配在 CI 里的理由。
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -169,7 +185,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: 确认 Redis 可达（不可达时给出可读提示，而不是让用例静默 skip）
+        env:
+          PERF_REDIS_URL: 127.0.0.1:6379
+        run: |
+          python -c "import os, socket; h, _, p = os.environ['PERF_REDIS_URL'].partition(':'); s = socket.create_connection((h, int(p)), timeout=3); s.sendall(b'PING\r\n'); r = s.recv(64); s.close(); print('Redis OK' if b'PONG' in r else 'REPLY ' + repr(r))"
+
       - name: 跑用例并入库（结果写进 quality.db，供后续趋势/flaky 分析）
+        env:
+          PERF_REDIS_URL: 127.0.0.1:6379
         run: |
           python platform_cli.py suite --label platform-tests
 

@@ -14,6 +14,38 @@
 
 ## 未发布
 
+### 新增（缓存与索引探针）
+
+- **接入一台真 Redis，并补上三条最容易出事的缓存失效路径。**
+  sut/redis_client.py 是纯标准库的 RESP2 客户端（不引 
+edis 包：依赖清单
+  由 check_deps_sync.py 逐字校验，而压测引擎本来就要求每 worker 自持连接）；
+  sut/cache.py 是缓存层，GET /api/items/{id}/detail 支持 cache=on|off。
+  被单独盯住的三条：**穿透**（负缓存哨兵 __PERF_MISS__）、**一致性**
+  （失效放在 commit 之后，否则并发读会把旧值写回）、**降级**
+  （Redis 连不上时接口照常 200，且 /api/_diagnostics/cache 的 ackend
+  会写成 
+one —— 降级不允许静默发生）。CI 的 platform-tests 用
+  service container 起 
+edis:7-alpine；连不上时那批用例自动 skip。
+  实测（5000 条数据 / 10u / 8s / 同一个 500 条热点集）：
+  cache=on P95 **16.8ms**（5520 次）vs cache=off P95 **36.9ms**（4593 次），**2.2×**。
+
+- **索引失效探针：把「本该快」做成可断言的东西。**
+  GET /api/items 新增 index=false，把过滤列包进 substr() 让索引失效。
+  	ests/test_index_probe.py（4 条）在 SQL 层断言两件事：执行计划必须一个是
+  SEARCH、一个是 SCAN；全表扫描必须比索引查找慢 5 倍以上（实测 10 万行下
+  **0.218ms vs 6.337ms，29×**）。
+  **刻意不做端到端断言**：同样的 29 倍，套上 HTTP 后单请求固定开销约 25ms
+  会把 6ms 压成 10% 抖动，而单机压测两轮之间本来就有 3% 量级 CV —— 在测不出来的
+  地方不假装测得出来，这是 docs/诚实边界.md 同一条原则。
+
+- **四个探针场景进 REGISTRY 但不进 DEFAULT_MIX**：item_detail_cached /
+  item_detail_nocache / items_by_category_indexed / items_by_category_fullscan。
+  理由：check_comparability 只看 scenario="(mix)" 这个字符串，看不出混合比例
+  已经变了；探针场景一旦混进默认压测，历史基线就悄悄不可比了。
+
+
 ### 修复
 
 - **CI 上的 R3 降级为"只报数不拦人"（`--r3-advisory`），并把噪声量出来留档。**

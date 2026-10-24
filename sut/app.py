@@ -26,15 +26,21 @@ import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response
 
+from sut.cache import ItemCache
 from sut.db import connect
+from sut.redis_client import Redis
 
 app = FastAPI(title="Inventory Perf SUT", version="1.0.0")
 
 REPORT_MODE = "PERF_SUT_REPORT_MODE"
 N1_SUPPLIER_LIMIT = int(os.environ.get("PERF_SUT_N1_SUPPLIERS", "40"))
+
+#: Redis 地址。留空 / 设为 `off` 时**不连**，所有缓存路径退化成直查数据库。
+REDIS_URL = "PERF_REDIS_URL"
 
 
 def _report_mode(explicit: str | None) -> str:
@@ -42,6 +48,35 @@ def _report_mode(explicit: str | None) -> str:
     if mode not in ("agg", "n1"):
         raise HTTPException(status_code=400, detail=f"unknown mode: {mode}")
     return mode
+
+
+def _build_cache() -> ItemCache:
+    """按环境变量装配缓存；连不上就退化成「无缓存」而不是让服务起不来。
+
+    **为什么允许没有 Redis**：这个仓库的三个门禁 job 里只有压测需要缓存，
+    而本地开发、`platform_cli suite`、以及不留神少起一个容器的 CI，
+    都不该因为「Redis 没起来」而整条流水线红。代价是「降级」这件事必须
+    可观测：降级时 `/api/_diagnostics/cache` 的 `backend` 会写成 `none`，
+    报告里也据此标注，绝不允许它静默发生。
+    """
+    raw = (os.environ.get(REDIS_URL) or "").strip()
+    if raw.lower() in ("", "off", "none", "0"):
+        return ItemCache(None)
+
+    host, _, port_text = raw.partition(":")
+    try:
+        port = int(port_text) if port_text else 6379
+    except ValueError:
+        port = 6379
+
+    client = Redis(host=host or "127.0.0.1", port=port)
+    if not client.ping():
+        # 注意：这里**不抛异常**。起不来的缓存是部署问题，不是接口错误。
+        return ItemCache(None)
+    return ItemCache(client)
+
+
+CACHE = _build_cache()
 
 
 @app.get("/healthz")
@@ -55,11 +90,19 @@ def list_items(
     supplier_id: int | None = None,
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    index: bool = Query(True, description="false = 把过滤列包进 substr()，故意让 idx_items_category 失效"),
 ):
     where, params = [], []
     if category_id is not None:
-        where.append("category_id = ?")
-        params.append(category_id)
+        if index:
+            where.append("category_id = ?")
+            params.append(category_id)
+        else:
+            # 索引失效的写法：列被 `substr()` 包住之后，索引里存的原始列值
+            # 就对不上了。线上最常见的形态是 `DATE(created_at) = ?` /
+            # `LOWER(email) = ?`，这里用 `substr` 只是同一类错误里最直观的一种。
+            where.append("substr(category_id, 1, 10) = CAST(? AS TEXT)")
+            params.append(category_id)
     if supplier_id is not None:
         where.append("supplier_id = ?")
         params.append(supplier_id)
@@ -96,6 +139,48 @@ def get_item(item_id: int):
         conn.close()
 
 
+def _load_item_detail(item_id: int) -> dict[str, Any] | None:
+    """缓存未命中时真正干活的查询。单独抽出来，才能把它交给 `ItemCache.get_or_load`。"""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT i.*, c.name AS category_name, s.name AS supplier_name"
+            " FROM items i"
+            " JOIN categories c ON c.id = i.category_id"
+            " JOIN suppliers s ON s.id = i.supplier_id"
+            " WHERE i.id = ?",
+            (item_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+@app.get("/api/items/{item_id}/detail")
+def item_detail(
+    item_id: int,
+    cache: str = Query("on", pattern="^(on|off)$"),
+    refresh: bool = False,
+):
+    """带缓存的物料详情 —— 缓存探针的**主对照组**。
+
+    * `cache=off`：每次都查库。这是"没有缓存时"的样子。
+    * `cache=on`：先查 Redis，未命中再查库并回填。
+    * `refresh=true`：跳过读但仍然回填，用来量"冷缓存"（每请求都写 Redis 但从不命中）。
+
+    三者配合能回答一个面试常问的问题：**收益到底来自"少查一次库"还是"少建一次连接"**。
+    如果 `refresh=true` 与 `cache=off` 差不多慢，说明写缓存的成本吃掉了读的收益。
+    """
+    enabled = cache == "on"
+    value, hit = CACHE.get_or_load(item_id, lambda: _load_item_detail(item_id), enabled=enabled, refresh=refresh)
+    if value is None:
+        # 注意：这里**不**因为负缓存而改变响应码。404 是正确语义，
+        # 负缓存只影响"下次还查不查库"，不影响"这个 id 存不存在"。
+        raise HTTPException(status_code=404, detail="item not found")
+    value["cache"] = {"enabled": enabled, "hit": hit, "refresh": refresh}
+    return value
+
+
 @app.get("/api/items/{item_id}/ledger")
 def item_ledger(item_id: int, limit: int = Query(50, ge=1, le=500)):
     conn = connect()
@@ -110,17 +195,40 @@ def item_ledger(item_id: int, limit: int = Query(50, ge=1, le=500)):
 
 
 @app.get("/api/reports/stock-by-category")
-def stock_by_category():
-    """健康的聚合：一次 SQL，走 idx_items_category。"""
+def stock_by_category(mode: str = Query("indexed", pattern="^(indexed|fullscan)$")):
+    """按类目统计库存 —— 同时是**索引失效探针**。
+
+    * `mode=indexed`：`JOIN ... ON i.category_id = c.id`，走 `idx_items_category`。
+    * `mode=fullscan`：把关联列包进 `substr()` 之后再比较。
+      SQLite 的查询规划器**不会**对表达式右边用上该列的索引
+      （索引里存的是列值本身，不是 `substr(列值)`），于是退化成全表扫描。
+
+    这不是"为了造慢查询而造"：线上最常见的索引失效原因就是
+    「在关联/过滤条件里给列套了函数」——`DATE(created_at) = ?`、
+    `LOWER(email) = ?`、`substr(code, 1, 4) = ?` 都属于这一类。
+    把它固化成探针，就能用一组数字证明「索引在的时候是多少毫秒、
+    不在的时候是多少毫秒」，而不是对着 `EXPLAIN` 空口解释。
+
+    两者的返回结构完全一致，所以对比是公平的（同一份数据、同样的聚合）。
+    """
     conn = connect()
     try:
-        rows = conn.execute(
-            "SELECT c.id AS category_id, c.name AS category_name,"
-            "       COUNT(i.id) AS item_count, COALESCE(SUM(i.stock), 0) AS stock_total"
-            " FROM categories c LEFT JOIN items i ON i.category_id = c.id"
-            " GROUP BY c.id, c.name ORDER BY c.id"
-        ).fetchall()
-        return {"rows": [dict(r) for r in rows]}
+        if mode == "fullscan":
+            rows = conn.execute(
+                "SELECT c.id AS category_id, c.name AS category_name,"
+                "       COUNT(i.id) AS item_count, COALESCE(SUM(i.stock), 0) AS stock_total"
+                " FROM categories c LEFT JOIN items i"
+                "   ON substr(i.category_id, 1, 10) = CAST(c.id AS TEXT)"
+                " GROUP BY c.id, c.name ORDER BY c.id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT c.id AS category_id, c.name AS category_name,"
+                "       COUNT(i.id) AS item_count, COALESCE(SUM(i.stock), 0) AS stock_total"
+                " FROM categories c LEFT JOIN items i ON i.category_id = c.id"
+                " GROUP BY c.id, c.name ORDER BY c.id"
+            ).fetchall()
+        return {"mode": mode, "rows": [dict(r) for r in rows]}
     finally:
         conn.close()
 
@@ -217,6 +325,10 @@ def adjust_stock(item_id: int, delta: int = Query(...)):
             (item_id, delta, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
+        # 缓存失效必须放在 commit **之后**：事务还没落地就删缓存，
+        # 中间那一瞬间如果有并发读，会读到旧值并把它重新写回缓存 ——
+        # 于是脏数据活得比 TTL 还久。这是缓存一致性最经典的一个坑。
+        CACHE.invalidate(item_id)
         return {"item_id": item_id, "stock": new_stock}
     finally:
         conn.close()
@@ -248,6 +360,10 @@ def create_order(item_id: int = Query(...), qty: int = Query(..., ge=1), idempot
             (item_id, qty, key, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
+        # 下单也会改库存，所以同样要让详情缓存失效。漏掉这一处的后果很隐蔽：
+        # 压测里下单与查详情是不同场景，脏读只会在**跨场景**时暴露 ——
+        # 单独压详情永远是 100% 命中率的漂亮数字。
+        CACHE.invalidate(item_id)
         return {"id": cur.lastrowid, "item_id": item_id, "qty": qty, "status": "CREATED"}
     finally:
         conn.close()
@@ -265,6 +381,17 @@ def diagnostics_indexes(response: Response):
         conn.close()
     response.headers["X-Report-Mode"] = _report_mode(None)
     return {"present": sorted(names & expected), "missing": missing}
+
+
+@app.get("/api/_diagnostics/cache")
+def diagnostics_cache():
+    """把「这一轮到底有没有命中缓存」变成可查询的事实。
+
+    报告里出现 `cache=on` 不代表缓存真的生效了：Redis 连不上、key 全部过期、
+    写路径把缓存删得太勤，都会让 `cache=on` 跑出与 `cache=off` 一样的结果。
+    这个接口存在的意义就是**让那种情况无法被含糊过去**。
+    """
+    return CACHE.diagnostics()
 
 
 @app.get("/api/_diagnostics/config")

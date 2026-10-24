@@ -79,6 +79,79 @@ def item_detail(session: requests.Session, base_url: str, timeout_s: float = 10.
     return run_api_call(session, base_url, "GET", f"/api/items/{item_id}", scenario="item_detail", timeout_s=timeout_s)
 
 
+#: 缓存探针的热点集大小。
+#:
+#: 这里有一个**很容易把结论做反**的细节：如果按全量 id 均匀随机，缓存命中率会
+#: 接近 0（20 000 个 id 里取 3 000 次，重复率只有十几个百分点），
+#: 于是"加了缓存"看起来几乎没用 —— 但那不是缓存不行，是**压测脚本没有模拟
+#: 真实的访问分布**。真实系统里少数热点承担绝大多数读取（长尾/Zipf）。
+#:
+#: 所以探针显式把流量收在前 500 个 id 上，并且 `cached` 与 `nocache` 两组
+#: 用**完全相同的 id 集合**，唯一的差别是 `cache=` 参数 —— 这样两组的差异
+#: 只能来自缓存，不会混进"访问到的数据不一样"这个变量。
+HOT_SET_SIZE = 500
+
+
+def _hot_item_id(r: random.Random) -> int:
+    return r.randint(1, max(1, min(HOT_SET_SIZE, _ITEM_ID_MAX)))
+
+
+def item_detail_cached(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
+    """带缓存读详情（热点集）。对照组是 `item_detail_nocache`。"""
+    item_id = _hot_item_id(_rnd())
+    return run_api_call(
+        session,
+        base_url,
+        "GET",
+        f"/api/items/{item_id}/detail?cache=on",
+        scenario="item_detail_cached",
+        timeout_s=timeout_s,
+    )
+
+
+def item_detail_nocache(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
+    """不带缓存读详情（同一个热点集）。"""
+    item_id = _hot_item_id(_rnd())
+    return run_api_call(
+        session,
+        base_url,
+        "GET",
+        f"/api/items/{item_id}/detail?cache=off",
+        scenario="item_detail_nocache",
+        timeout_s=timeout_s,
+    )
+
+
+def items_by_category_indexed(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
+    """按类目过滤，走 `idx_items_category`（对照组）。"""
+    category_id = _rnd().randint(1, 10)
+    return run_api_call(
+        session,
+        base_url,
+        "GET",
+        f"/api/items?category_id={category_id}&limit=20",
+        scenario="items_by_category_indexed",
+        timeout_s=timeout_s,
+    )
+
+
+def items_by_category_fullscan(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
+    """同一个查询，但过滤列被 `substr()` 包住 → 索引失效、退化成全表扫描。
+
+    两组用**同样的类目分布**，唯一的差别是 `index=false`。
+    这样差异只能来自执行计划，不会混进"查的类目不一样"。
+    """
+    category_id = _rnd().randint(1, 10)
+    return run_api_call(
+        session,
+        base_url,
+        "GET",
+        f"/api/items?category_id={category_id}&index=false&limit=20",
+        scenario="items_by_category_fullscan",
+        timeout_s=timeout_s,
+    )
+
+
 def stock_by_category(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
     return run_api_call(
         session,
@@ -138,17 +211,30 @@ REGISTRY = {
     "stock_by_category": stock_by_category,
     "slow_report": slow_report,
     "stock_write": stock_write,
+    # 下面四组是**探针对照组**，刻意不进 DEFAULT_MIX：
+    # 默认混合的比例一旦变化，历史基线就不可比（`metrics/analysis.py`
+    # 的 check_comparability 只看 `scenario="(mix)"` 这个字符串，
+    # 看不出混合比例已经变了）。所以它们只能被 `--scenario` 点名使用，
+    # 由专门的探针命令成对跑。
+    "item_detail_cached": item_detail_cached,
+    "item_detail_nocache": item_detail_nocache,
+    "items_by_category_indexed": items_by_category_indexed,
+    "items_by_category_fullscan": items_by_category_fullscan,
 }
 
 
 def build_mix(names: list[str] | None = None) -> list[tuple]:
-    """按名字构造 [(场景函数, 权重)]，权重取自 DEFAULT_MIX。"""
+    """按名字构造 [(场景函数, 权重)]，权重取自 DEFAULT_MIX。
+
+    注意：`names` 里可以出现不在 `DEFAULT_MIX` 的探针场景（如
+    `item_detail_cached`），此时权重取 1 —— 探针场景本来就是一次只压一个。
+    """
     names = names or list(DEFAULT_MIX)
     out = []
     for n in names:
         if n not in REGISTRY:
             raise KeyError(f"未知场景 {n}，可选：{sorted(REGISTRY)}")
-        out.append((REGISTRY[n], DEFAULT_MIX[n]))
+        out.append((REGISTRY[n], DEFAULT_MIX.get(n, 1)))
     return out
 
 

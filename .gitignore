@@ -4,7 +4,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
-# `--cov-report=json:.coverage.json` 的产物：per-file 门禁读它。
+# `--cov-report=json:.coverage.json
+# 本地手动跑 --cov-report=json:coverage.json 的产物（CI 里叫 .coverage.json）。
+coverage.json` 的产物：per-file 门禁读它。
 # 它是**产物**不是源码，每次跑测试都重新生成；误提交进去会让
 # 「覆盖率到底多少」变成一份可能过期的快照，而门禁读它等于在判旧数据。
 .coverage.*
