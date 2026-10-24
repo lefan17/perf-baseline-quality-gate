@@ -168,6 +168,25 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # MySQL 是第二件"必须是真的"的东西：`tests/test_mysql_store.py` 要验的是
+      # **行锁**（SELECT ... FOR UPDATE）与**连接会坏**（坏连接必须丢弃而不是还回池）
+      # 这两件事，用内存里的假实现一条都测不到。
+      # 端口映射到 3307 是为了和本机开发常用的 3306 错开，避免"本地能跑 CI 不能跑"。
+      mysql:
+        image: mysql:8.0
+        ports:
+          - 3307:3306
+        env:
+          MYSQL_ROOT_PASSWORD: perfroot
+          MYSQL_DATABASE: perf
+          MYSQL_USER: perf
+          MYSQL_PASSWORD: perfpass
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pperfroot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --default-authentication-plugin=mysql_native_password
     steps:
       - uses: actions/checkout@v4
 
@@ -191,6 +210,18 @@ jobs:
         run: |
           python -c "import os, socket; h, _, p = os.environ['PERF_REDIS_URL'].partition(':'); s = socket.create_connection((h, int(p)), timeout=3); s.sendall(b'PING\r\n'); r = s.recv(64); s.close(); print('Redis OK' if b'PONG' in r else 'REPLY ' + repr(r))"
 
+      # MySQL 的"可达"必须用**驱动真连一次**来判，不能探端口：
+      # 端口开着但认证失败、库不存在，对用例来说都是"连不上"，
+      # 而探端口会把这两种情况都报成 OK，然后用例集体 skip —— 绿得毫无信息量。
+      - name: 确认 MySQL 可达（用真驱动连一次，而不是探端口）
+        env:
+          PERF_MYSQL_URL: 127.0.0.1:3307
+          PERF_MYSQL_USER: perf
+          PERF_MYSQL_PASSWORD: perfpass
+          PERF_MYSQL_DB: perf
+        run: |
+          python -c "import os, pymysql; h, _, p = os.environ['PERF_MYSQL_URL'].partition(':'); c = pymysql.connect(host=h, port=int(p), user=os.environ['PERF_MYSQL_USER'], password=os.environ['PERF_MYSQL_PASSWORD'], database=os.environ['PERF_MYSQL_DB'], connect_timeout=5); cur = c.cursor(); cur.execute('SELECT VERSION()'); print('MySQL OK:', cur.fetchone()[0]); c.close()"
+
       # 为什么要在 CI 里装 nginx：`tests/test_proxy_probe.py` 里那条集成用例
       # （`test_proxy_returns_the_same_payload_as_direct`）在没有 nginx 的机器上是 skip。
       # 一个永远 skip 的用例等于没有这个用例 —— 装上 nginx，它就从「跳过」变成「断言」：
@@ -206,6 +237,10 @@ jobs:
       - name: 跑用例并入库（结果写进 quality.db，供后续趋势/flaky 分析）
         env:
           PERF_REDIS_URL: 127.0.0.1:6379
+          PERF_MYSQL_URL: 127.0.0.1:3307
+          PERF_MYSQL_USER: perf
+          PERF_MYSQL_PASSWORD: perfpass
+          PERF_MYSQL_DB: perf
         run: |
           python platform_cli.py suite --label platform-tests
 
@@ -255,6 +290,31 @@ jobs:
       # 本版本（pytest-cov 7.1.0）下逗号写法**静默收集不到数据**，
       # 报告出 0% 而不是报错。
       # --------------------------------------------------------------------- #
+      # 写路径对照：同一个写动作，SQLite（整库写锁）vs MySQL（行锁）。
+      # 与反向代理探针同样的原则：**只发布数字，不断言比值**。
+      # 这里要证明的是"两套存储都能被量出来"，而不是"MySQL 一定更快" ——
+      # 后者在共享 runner 上会随机红。
+      - name: 写路径探针（SQLite vs MySQL，只发布数字）
+        env:
+          PERF_MYSQL_URL: 127.0.0.1:3307
+          PERF_MYSQL_USER: perf
+          PERF_MYSQL_PASSWORD: perfpass
+          PERF_MYSQL_DB: perf
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          python scripts/mysql_probe.py --items 2000 --users 10 --duration 5 | tee /tmp/mysql-probe.txt
+          grep -q "SQLite" /tmp/mysql-probe.txt
+          {
+            echo "## 写路径探针（同一动作，换存储与锁粒度）"
+            echo ""
+            echo '```'
+            cat /tmp/mysql-probe.txt
+            echo '```'
+            echo ""
+            echo "> 差值是「锁粒度」的价格，不是代码路径的差异；绝对值不可外推。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 覆盖率门槛（业务代码 ≥ 40%）
         run: |
           python -m pytest tests/ -q \

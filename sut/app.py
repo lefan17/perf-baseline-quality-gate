@@ -33,6 +33,14 @@ from fastapi.responses import JSONResponse
 
 from sut.cache import ItemCache
 from sut.db import connect, get_pool, pool_size
+from sut.mysql_store import (
+    MYSQL_URL_ENV,
+    InsufficientStockError,
+    MySQLStore,
+    MySQLUnavailableError,
+    UnknownItemError,
+    build_store,
+)
 from sut.pool import PoolExhaustedError
 from sut.redis_client import Redis
 
@@ -106,6 +114,48 @@ def _build_cache() -> ItemCache:
 
 
 CACHE = _build_cache()
+
+
+def _build_mysql() -> MySQLStore | None:
+    """按环境变量装配 MySQL 写路径；没配 `PERF_MYSQL_URL` 就是 None。
+
+    **与缓存一样不在导入期连库**：`uvicorn` 启动时容器可能还没就绪，
+    启动即失败会让整个服务起不来。真正的连接延迟到第一次请求，
+    失败也只影响那一个请求（503），不影响其他 8 个 SQLite 路由。
+    """
+    return build_store()
+
+
+MYSQL = _build_mysql()
+
+
+@app.exception_handler(MySQLUnavailableError)
+async def _mysql_unavailable_handler(request: Request, exc: MySQLUnavailableError) -> JSONResponse:
+    """MySQL 不可用 → 503。
+
+    为什么不是 500：503 的含义是「现在接不住，稍后重试」，500 的含义是
+    「代码有 bug」。把连不上数据库记成 500，值班的人会去翻代码而不是看数据库。
+    """
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "1"},
+        content={
+            "error": "mysql unavailable",
+            "detail": str(exc),
+            "hint": "看 /api/_diagnostics/mysql 的 ping 与池快照；容器没起来时这里会一直是 false",
+        },
+    )
+
+
+@app.exception_handler(UnknownItemError)
+async def _mysql_unknown_item_handler(request: Request, exc: UnknownItemError) -> JSONResponse:
+    item_id = exc.args[0] if exc.args else None
+    return JSONResponse(status_code=404, content={"error": "item not found", "item_id": item_id})
+
+
+@app.exception_handler(InsufficientStockError)
+async def _mysql_insufficient_stock_handler(request: Request, exc: InsufficientStockError) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"error": "insufficient stock", "detail": str(exc)})
 
 
 @app.get("/healthz")
@@ -437,6 +487,47 @@ def diagnostics_pool():
     return {"enabled": True, **pool.snapshot()}
 
 
+@app.post("/api/mysql/stock/{item_id}", status_code=201)
+def adjust_stock_mysql(item_id: int, delta: int = Query(...)):
+    """写路径（MySQL）：行锁 → 更新 → 记流水，一个事务。
+
+    与 `/api/items/{id}/stock` 的差别不止是存储：那边用 `BEGIN IMMEDIATE`
+    拿**整库写锁**（SQLite 只有这一档），这边用 `SELECT … FOR UPDATE`
+    拿**行锁**。同样的防超卖逻辑，两边的并发上限完全不同 —— 这正是
+    `stock_write` 在两个后端上量出两个数字的原因。
+    """
+    if MYSQL is None:
+        raise HTTPException(status_code=503, detail="MySQL 未配置（PERF_MYSQL_URL 未设置）")
+    new_stock = MYSQL.adjust_stock(item_id, delta)
+    return {"item_id": item_id, "stock": new_stock, "backend": "mysql"}
+
+
+@app.get("/api/mysql/stock/{item_id}")
+def get_stock_mysql(item_id: int):
+    """读路径（MySQL）：普通快照读，不拿锁。"""
+    if MYSQL is None:
+        raise HTTPException(status_code=503, detail="MySQL 未配置（PERF_MYSQL_URL 未设置）")
+    return {"item_id": item_id, "stock": MYSQL.get_stock(item_id), "backend": "mysql"}
+
+
+@app.get("/api/_diagnostics/mysql")
+def diagnostics_mysql():
+    """MySQL 到底通不通、池现在什么状态。
+
+    诊断接口自己**不能因为数据库挂了就 500**：它存在的意义就是在数据库
+    出问题时还能回答「是不是数据库的问题」。所以这里把异常吃成
+    `ping: false` 加错误文本。
+    """
+    if MYSQL is None:
+        return {"enabled": False, "note": "PERF_MYSQL_URL 未设置，MySQL 写路径未启用"}
+    snapshot = MYSQL.snapshot()
+    try:
+        rows = MYSQL.row_count()
+    except Exception as exc:  # noqa: BLE001 —— 见 docstring：诊断接口要把异常变成数据
+        return {"enabled": True, "ping": False, "error": str(exc), **snapshot}
+    return {"enabled": True, "ping": True, "row_count": rows, **snapshot}
+
+
 @app.get("/api/_diagnostics/config")
 def diagnostics_config():
     """把"这一轮跑的是什么配置"变成可查询的事实。
@@ -450,6 +541,7 @@ def diagnostics_config():
         "n1_suppliers": N1_SUPPLIER_LIMIT,
         "pool_size": pool_size(),
         "redis_url": os.environ.get(REDIS_URL, "") or "(off)",
+        "mysql_url": os.environ.get(MYSQL_URL_ENV, "") or "(off)",
         "python": sys.version.split()[0],
         "fastapi": __import__("fastapi").__version__,
         "uvicorn": __import__("uvicorn").__version__,

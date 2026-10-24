@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 
 import requests
@@ -205,6 +206,49 @@ def stock_write(session: requests.Session, base_url: str, timeout_s: float = 10.
     return s2
 
 
+def _mysql_rows() -> int:
+    """MySQL 侧到底渗了多少行 —— 必须与 SUT 的 `PERF_MYSQL_ROWS` 一致。
+
+    不一致的后果很隐蔽：场景随机取的 item_id 超出行数时，请求是 **404**，
+    错误率上去了，但 P95 反而很好看（404 比写事务快得多）。
+    「写路径变快了」这种结论只要混进一次 404 就是假的。
+    """
+    return int(os.environ.get("PERF_MYSQL_ROWS", "1000"))
+
+
+def stock_write_mysql(session: requests.Session, base_url: str, timeout_s: float = 10.0) -> Sample:
+    """写路径（MySQL）：与 `stock_write` 打同一件事，只换后端。
+
+    两个场景刻意保持**完全相同的请求形状**（+1 再 -1、两次往返算一个动作），
+    否则"SQLite 66 RPS vs MySQL N RPS"就变成了两个不同工作的比较。
+    """
+    r = _rnd()
+    ceiling = min(item_id_max(), _mysql_rows())
+    item_id = r.randint(1, ceiling) if ceiling > 0 else 1
+    s1 = run_api_call(
+        session,
+        base_url,
+        "POST",
+        f"/api/mysql/stock/{item_id}?delta=1",
+        expect_status=201,
+        scenario="stock_write_mysql",
+        timeout_s=timeout_s,
+    )
+    if not s1.ok:
+        return s1
+    s2 = run_api_call(
+        session,
+        base_url,
+        "POST",
+        f"/api/mysql/stock/{item_id}?delta=-1",
+        expect_status=201,
+        scenario="stock_write_mysql",
+        timeout_s=timeout_s,
+    )
+    s2.elapsed_ms += s1.elapsed_ms
+    return s2
+
+
 REGISTRY = {
     "items_list": items_list,
     "item_detail": item_detail,
@@ -220,6 +264,9 @@ REGISTRY = {
     "item_detail_nocache": item_detail_nocache,
     "items_by_category_indexed": items_by_category_indexed,
     "items_by_category_fullscan": items_by_category_fullscan,
+    # MySQL 写路径同理：它是「同一个写动作换后端」的对照组，
+    # 混进默认混合会让历史基线不可比，而且还要依赖一个外部容器。
+    "stock_write_mysql": stock_write_mysql,
 }
 
 

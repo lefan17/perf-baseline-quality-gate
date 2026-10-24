@@ -174,6 +174,32 @@ class ConnectionPool:
         self._free.put(conn)
         self._sem.release()
 
+    def discard(self, conn: object) -> None:
+        """丢弃一条**坏**连接：关掉它，只释放名额，不放回空闲队列。
+
+        与 `checkin()` 的区别就是「放回队列」这一步。为什么必须分开：
+
+        MySQL 连接会因为 `wait_timeout`、服务端重启、网络闪断而失效。
+        如果把失效连接 `checkin()` 回队列，下一个人借到的就是它 —— 报错、
+        再还回去、让再下一个人也踩。**一条坏连接可以在池里活很久**，
+        表现出来是「偶发 500」，而且重跑就消失，是最难复现的那类 bug。
+
+        SQLite 时代不需要这个方法：库就是一个文件，连接不会"半死"。
+        换成真数据库之后，**「连接会坏」变成必须显式处理的状态**。
+        """
+        close = getattr(conn, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                # 关闭失败也不能掩盖原始异常：调用方要看到的是"这条连接不可用"。
+                pass
+        with self._lock:
+            if self._acquired <= 0:
+                return
+            self._acquired -= 1
+        self._sem.release()
+
     @staticmethod
     def _rollback_quietly(conn: object | None) -> None:
         if conn is None:
