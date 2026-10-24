@@ -12,6 +12,9 @@
 `metrics.knee` | 拐点那一档的指标（**不能与 total 混用**） |
 `probes.cache` | 缓存探针：`cache=on` vs `cache=off` 的端到端 P95（2.2 倍） |
 `probes.index` | 索引探针：`SEARCH` vs `SCAN` 的 SQL 层耗时（29 倍）与执行计划 |
+`probes.pool` | 连接池：池耗尽时的状态码（503 + `Retry-After`）与诊断字段 |
+`probes.proxy` | 反向代理：直连 / 上游 keep-alive / 上游每次新建 三口径 |
+`probes.mysql` | 写路径：SQLite（整库写锁）vs MySQL（行锁）的 P95 / RPS 与状态码映射 |
 `notes` | 哪些数字能外推、哪些不能 |
 
 ## 怎么复核
@@ -38,6 +41,13 @@ python -m pytest tests/test_connection_pool.py -v
 # 反向代理：需要一个 nginx（没有会自动跳过并打印安装提示）
 $env:PERF_NGINX_EXE = "D:\study\AppCache\nginx-1.27.2\nginx.exe"
 python scripts/proxy_probe.py --items 20000 --users 20 --duration 8
+
+# 写路径：需要一个 MySQL（连不上会自动跳过并打印怎么起容器）
+docker run -d --name perf-mysql -e MYSQL_ROOT_PASSWORD=perfroot -e MYSQL_DATABASE=perf `
+  -e MYSQL_USER=perf -e MYSQL_PASSWORD=perfpass -p 3307:3306 mysql:8.0 `
+  --default-authentication-plugin=mysql_native_password
+$env:PERF_MYSQL_URL = "127.0.0.1:3307"
+python scripts/mysql_probe.py --items 5000 --users 10 --duration 8
 ```
 
 ## 与 reports/ 的关系
@@ -65,11 +75,19 @@ python scripts/proxy_probe.py --items 20000 --users 20 --duration 8
 
 在测不出来的地方就不假装测得出来 —— 这是 `docs/诚实边界.md` 的同一条原则。
 
-## 两个不要读错的地方
+## 几处不要读错的地方
 
-1. **连接池是自写的池，不是 MySQL 的池。** SUT 主库仍是 SQLite。相同的是现象与判据
-   （503 率、饱和度、获取超时计数），不是产品。`sut/pool.py` 与 `tests/test_connection_pool.py`
-   的 docstring 里都写了这一点。
-2. **反向代理的绝对数字不能外推。** 那是 Windows 单进程 nginx + 本机回环；
+1. **写路径的绝对值不可外推，但方向可以。** SQLite 侧是整库写锁（`BEGIN IMMEDIATE`），
+   MySQL 侧是行锁（`SELECT … FOR UPDATE`），差值是**锁粒度**的价格；两者跑在同一个
+   box 上、还和压测客户端抢 CPU。别把 `190 RPS` 读成「这台 MySQL 能写 190」。
+2. **连接池是自写的池，但池里现在真的装 MySQL 连接**（`sut/mysql_store.py`）。
+   仍然不是「引了第三方池」；相同的是限流、复用、获取超时、丢弃坏连接这套语义。
+   它也不是产品级的连接池实现：没有后台健康检查、没有最大生命周期回收。
+3. **MySQL 侧的数据量与 `--items` 必须一致**（`PERF_MYSQL_ROWS`）。不一致时场景会
+   随机取到不存在的 `item_id`，得到 **404** —— 而 404 比写事务快得多，
+   「写路径变快了」这种结论只要混进一次 404 就是假的。
+4. **反向代理的绝对数字不能外推。** 那是 Windows 单进程 nginx + 本机回环；
    生产上是 Linux 多 worker，绝对开销不同。可外推的是**方向与量级**：
    上游每次新建连接会同时抬高延迟和错误率（20 并发下 P95 1.70×、错误率 0 → 18.67%）。
+5. **索引的 29 倍只在 SQL 层成立**：套上 HTTP 后会被约 25 ms 的固定开销压成 10% 抖动，
+   端到端看不出差别。这不是没测，是测了才发现不该在端到端断言。

@@ -37,7 +37,7 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 | **解决什么** | 「变慢了没有 / 和谁比 / 门禁到底拦不拦得住」——把性能从「跑个压测看个数字」变成 CI 里真能变红的判定 |
 | **压的是什么** | 内置被测服务（FastAPI + SQLite），**故意保留一个 N+1 缺陷**：`agg` 单条 SQL 聚合 vs `n1` 逐供应商查询，20k 数据下约 7.8× |
 | **12 条规则** | R1–R5（性能）+ P0–P3（探针）+ S1–S3（套件），阈值全部集中在 `gate_rules.yaml` |
-| **中间件与链路** | 一条**真 Redis**（CI 用 service container）→ 热点集命中 P95 16.8ms vs 无缓存 36.9ms（2.2×）；索引失效在 SQL 层 29×；再加一层 **nginx 反代探针**：上游连接不复用时 P95 再 1.70×、错误率从 0.00% 变 18.67% |
+| **中间件与链路** | 一条**真 Redis**（CI 用 service container）→ 热点集命中 P95 16.8ms vs 无缓存 36.9ms（2.2×）；索引失效在 SQL 层 29×；再加一层 **nginx 反代探针**：上游连接不复用时 P95 再 1.70×、错误率从 0.00% 变 18.67%；再加一层**写路径对照**：同一写动作换真 MySQL，P95 0.19×、RPS 2.72× |
 | **怎么证明门禁会红** | `tests/test_r3_end_to_end.py` 起真 CLI + 真 sqlite，把基线改快 10× 后断言报告出现 `[FAIL]`、退出码 1 |
 | **怎么跑** | `pip install -r requirements.txt` → `python platform_cli.py run --label local` |
 | **看什么** | [在线看板](https://lefan17.github.io/perf-baseline-quality-gate/)：趋势图、基线对比、门禁结果 |
@@ -253,6 +253,47 @@ SUT 主库仍是 SQLite —— **这是自写的池，不是 MySQL 的池**，�
 > 抛了转成什么（直接调异常处理器）、链路是否可达（诊断接口 + 恢复）。
 > **不把「碰巧并发」写进判据**，否则这条用例迟早变成随机红。
 
+### 7. 写路径：SQLite 的整库写锁 vs MySQL 的行锁
+
+`docs/诚实边界.md` 里有一条自我限制：**SQLite 是单写者，写路径的数字没有
+参考价值**（`stock_write` 66 RPS / P95 403.9ms，是 `BEGIN IMMEDIATE` 在排队，
+不是业务慢）。这一节是它的反证：同一件事在**真 MySQL** 上再量一次。
+
+同一个写动作（`+1` 再 `-1`，两次往返算一个业务动作），只换存储：
+
+| 口径 | P50 | P95 | P99 | RPS | 错误率 |
+|---|---|---|---|---|---|
+| SQLite（`BEGIN IMMEDIATE`，整库写锁） | 116.68 ms | **346.49 ms** | 957.58 ms | **69.7** | 0.00% |
+| MySQL（`SELECT … FOR UPDATE`，行锁） | 51.63 ms | **65.80 ms** | 73.64 ms | **189.8** | 0.00% |
+
+相对 SQLite：**P95 0.19×、RPS 2.72×**（5000 条数据 / 10 并发 / 每口径 8 秒、
+丢弃前 1 秒热身；`python scripts/mysql_probe.py`）。
+
+**池没有被替换，被替换的是池里装的东西**：`sut/pool.py` 那个自写的
+`ConnectionPool` 原样复用，只把 factory 从「打开一条 sqlite3 连接」换成
+「`pymysql.connect()`」。驱动必须用库（没人为了演示池去手写 MySQL 协议），
+池必须自己写 —— 后者才是「你知道资源有限」那个考点。
+
+换成真数据库之后，**多出来一件 SQLite 时代不存在的事：连接会坏**。
+`wait_timeout`、服务端重启、网络闪断都会让一条连接"半死"。所以池新增了
+`discard(conn)`：关掉它、只释放名额、**绝不放回空闲队列**。
+把坏连接 `checkin()` 回去的后果是下一个人拿到它、报错、再还回去 ——
+一条坏连接能在池里活很久，表现为「偶发 500、重跑就好」。
+
+同步补上的三条映射（都对应一次会看错的现象）：
+
+| 情况 | 返回 | 为什么不是别的 |
+|---|---|---|
+| MySQL 连不上 / 连接失效 | **503** + `Retry-After` | 500 会被当成 bug 去翻代码；这是「数据库不可用」 |
+| item 不存在 | **404** | 与「库存不足」必须能分开，否则调用方只能笼统重试 |
+| 扣成负数 | **409**（并回滚） | 报错了但数据已经写坏，是最糟的一种"成功" |
+
+> **这个探针我第一次跑就踩了自己的坑**：`--items 5000`，但场景模块不知道
+> 数据量，默认按 20000 取 ID，于是大部分请求打到不存在的 item 上 ——
+> SQLite 口径错误率 72%、P95 却只有 244ms。原因很简单：**404 比写事务快得多**。
+> 「写路径变快了」这种结论只要混进一次 404 就是假的。修法是显式
+> `configure_item_range(items)`，并在文档里把这条写出来。
+
 
 ---
 
@@ -262,7 +303,7 @@ SUT 主库仍是 SQLite —— **这是自写的池，不是 MySQL 的池**，�
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（318 passed，约 115 秒；缓存用例需要一台 Redis，没有则自动 skip）
+# 2. 跑平台自身的测试（331 passed，约 131 秒；缓存/MySQL 用例需要真容器，没有则自动 skip）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -607,7 +648,7 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-318 passed in ~115s
+331 passed in ~131s
 ```
 
 | 测试文件 | 用例数 | 覆盖 |
@@ -629,7 +670,7 @@ $ pytest tests/ -q
 | `test_engine_runner.py` | 13 | `Runner` 真跑：起 stdlib `ThreadingHTTPServer`、真开线程池、真丢热身样本、真把 500 记成失败样本 |
 | `test_dashboard_api.py` | 25 | 看板对外端点的契约（本仓没装 httpx，直接调端点函数） |
 | `test_proxy_probe.py` | 10 | 反向代理探针：配置渲染（1.1/空 `Connection` 不能写反）、没有 nginx 时退出码必须是 0、三个口径都真的被量一次 |
-| **合计** | **318** | |
+| **合计** | **331** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -812,8 +853,8 @@ profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相
 
 | 口径 | 命令 | 实测 |
 |---|---|---|
-| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **2497 stmts / 824 miss / 67%** |
-| 含 `tests/` 自身 | `--cov=.` | 5095 stmts / 884 miss / 83% |
+| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **2705 stmts / 882 miss / 67%** |
+| 含 `tests/` 自身 | `--cov=.` | 5422 stmts / 947 miss / 83% |
 
 **门槛取 40**，理由：
 
@@ -903,7 +944,7 @@ python scripts/check_coverage.py --report .coverage.json
 | `metrics/gate.py` | 62.7% | 68.1% |
 | `metrics/analysis.py` | 70.1% | 70.1% |
 | 全仓（门槛口径） | 58.79% | **67%** |
-| 用例数 | 188 | **318** |
+| 用例数 | 188 | **331** |
 
 提高覆盖率不是目标本身。把 `sut/*` 从 0% 拉起来需要子进程追踪方案
 （`coverage run --parallel-mode` 之类），而那会改变压测进程的启动路径 ——

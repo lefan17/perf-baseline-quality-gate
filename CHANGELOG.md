@@ -14,6 +14,36 @@
 
 ## 未发布
 
+### 新增（真 MySQL 写路径）
+
+- **接一台真 MySQL，让「连接池」不再只是 SQLite 的类比。**
+  `docs/诚实边界.md` 里那条自我限制（SQLite 单写者 ⇒ 写路径数字没有参考价值，
+  `stock_write` 66 RPS / P95 403.9ms）现在有了反证：同一个写动作
+  （`+1` 再 `-1`，两次往返算一个动作）只换存储，SQLite P95 **346.49ms / 69.7 RPS**，
+  MySQL P95 **65.80ms / 189.8 RPS** → **P95 0.19×、RPS 2.72×**。
+  **池没有被替换**：`sut/pool.py` 原样复用，只把 factory 从
+  「打开一条 sqlite3 连接」换成 `pymysql.connect()`。驱动必须用库
+  （没人为了演示池手写 MySQL 协议），池必须自己写。
+- **`sut/mysql_store.py`**：`SELECT … FOR UPDATE` 行锁 → 更新 → 记流水，一个事务；
+  与 SQLite 侧 `BEGIN IMMEDIATE`（整库写锁）形成对照，**同样的防超卖在两套存储上
+  不是同一种机制**，这是两套数字不同的原因。
+- **池新增 `discard(conn)`：连接会坏，这件事是换真数据库才出现的。**
+  `wait_timeout` / 服务端重启 / 网络闪断会让连接"半死"；把它 `checkin()` 回队列
+  的后果是下一个人拿到它、报错、再还回去 —— 一条坏连接能在池里活很久，
+  表现为「偶发 500、重跑就好」。`discard` 只释放名额，**不放进空闲队列**。
+- **三条状态码映射**：连不上 → 503 + `Retry-After`；item 不存在 → 404；
+  扣成负数 → 409 并回滚。混成 500 会让值班的人去翻代码，而事实是数据库不可用。
+- **`scripts/mysql_probe.py`**：写路径对照探针，MySQL 连不上时以 0 退出并打印
+  怎么起容器 —— 与 `proxy_probe.py` 同样的「附加证据，不成为门槛」。
+- `tests/test_mysql_store.py` **13 条**（探测不到 MySQL 整组 skip）：建表幂等、
+  写读往返、404、409（并验证真的回滚了）、池复用、连不上抛
+  `MySQLUnavailableError`、`discard` 不回收坏连接、两个新路由与诊断接口。
+  这批用例第一次跑就抓到两个真 bug：`ping()` 在 `try` 里 `return` 导致连接
+  泄漏（`in_use` 永远下不来）、`ensure_schema()` 的建连失败没被映射成
+  `MySQLUnavailableError`（会漏成 500）。
+- **依赖**：新增 `PyMySQL==1.1.1`，同时写进 `requirements.txt` 与
+  `pyproject.toml [project].dependencies`（由 `check_deps_sync.py` 逐字校验）。
+
 ### 变更（CI）
 
 - **`platform-tests` job 显式安装 nginx，并跑一次三口径探针。**
