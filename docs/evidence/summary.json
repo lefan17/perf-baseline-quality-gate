@@ -1,7 +1,7 @@
 {
   "schema": "evidence-summary@1",
   "repo": "perf-baseline-quality-gate",
-  "collected_at": "2026-10-24T18:48:12+08:00",
+  "collected_at": "2026-10-24T20:20:00+08:00",
   "source": "baselines/ci-perf.json（CI 基线快照，入库文件）",
   "produced_at": "2026-10-16T16:12:58+00:00",
   "run_id": "perf-20261016-161127-180f9d",
@@ -47,9 +47,56 @@
       "machine": "x86_64"
     }
   },
+  "probes": {
+    "_comment": "下面两组是**探针**，不是压测主指标。它们各自只在能测准的层断言，理由写在各组的 notes 里。",
+    "cache": {
+      "source": "本机实测（Windows / Docker redis:7-alpine / 5000 条数据 / 10 用户 / 8 秒 / 同一个 500 条热点集）",
+      "reproduce": "docker run -d -p 6379:6379 --name perf-redis redis:7-alpine; set PERF_REDIS_URL=127.0.0.1:6379; python platform_cli.py run --scenario item_detail_cached --items 5000 --step-users 10 --step-duration 8（对照组换成 item_detail_nocache）",
+      "produced_at": "2026-10-24T20:02:00+08:00",
+      "on": {
+        "p95_ms": 16.8,
+        "requests": 5520,
+        "error_rate": 0.0
+      },
+      "off": {
+        "p95_ms": 36.9,
+        "requests": 4593,
+        "error_rate": 0.0
+      },
+      "ratio": 2.2,
+      "notes": [
+        "两组用**同一个热点集**，唯一差别是 cache= 参数 —— 差异只能来自缓存，不会混进「访问到的数据不一样」。",
+        "为什么是热点集而不是全量随机 id：20000 个 id 里随机取 3000 次，重复率只有十几个百分点，缓存命中率会接近 0；那不是缓存不行，是压测脚本没模拟真实访问分布（长尾/Zipf）。",
+        "这个 2.2 倍只在「5000 条数据 + 500 条热点」这组条件下成立，换条件必须重测，不要外推。"
+      ]
+    },
+    "index": {
+      "source": "SQL 层实测（10 万行 / 单连接 / 各 100 次取中位）",
+      "reproduce": "python -m pytest tests/test_index_probe.py -v（4 条：执行计划 + 倍数 + 数据量下限）",
+      "produced_at": "2026-10-24T19:58:00+08:00",
+      "indexed": {
+        "sql": "SELECT COUNT(*) FROM items WHERE category_id = ?",
+        "median_ms": 0.218,
+        "plan": "SEARCH items USING COVERING INDEX idx_items_category (category_id=?)"
+      },
+      "fullscan": {
+        "sql": "SELECT COUNT(*) FROM items WHERE substr(category_id, 1, 10) = CAST(? AS TEXT)",
+        "median_ms": 6.337,
+        "plan": "SCAN items USING COVERING INDEX idx_items_category"
+      },
+      "ratio": 29,
+      "notes": [
+        "**刻意不做端到端断言**：同样的 29 倍套上 HTTP 之后，单请求固定开销约 25ms 会把 6ms 压成 10% 左右的抖动，而单机压测两轮之间本来就有 3% 量级的 CV。在测不出来的地方不假装测得出来。",
+        "判据是「执行计划 SEARCH vs SCAN」+「SQL 层耗时倍数 ≥ 5」两条，前者是确定的、不依赖机器速度的。",
+        "这条探针同时守两件事：索引失效真的会慢；索引别被人悄悄删了（删掉后两种写法都变 SCAN，倍数掉到 1 左右，测试变红）。",
+        "5 万行时全表扫描约 3ms、索引约 0.12ms；低于这个数据量，差值会小到被 Python 计时精度吃掉。"
+      ]
+    }
+  },
   "notes": [
     "绝对数字不可外推：单机 ThreadPoolExecutor 引擎、SQLite 单写者、Windows 本机，换机器/换并发都会变。可外推的是**比例关系**（例如同一配置下 agg 与 n1 的差距）。",
     "total.p95=53.9ms 与 knee.p95=110.1ms 是两个不同口径：total 是全部样本池化，knee 是拐点那一档。引用时不要混用。",
-    "R2 的 300ms 绝对阈值对高并发档偏松，因为 merge 规则取的是最差梯度；这也是「阈值型门禁在压测上不如比例型敏感」的一个真实例子。"
+    "R2 的 300ms 绝对阈值对高并发档偏松，因为 merge 规则取的是最差梯度；这也是「阈值型门禁在压测上不如比例型敏感」的一个真实例子。",
+    "本轮新增 p95_abs_max_ms：R2 现在判「绝对值口径 P95」（即最慢那一档），与「尾比口径 P95」（P99/P95 比值最大那一档）分开报。老基线没有这个键时自动退化，不必重建基线。"
   ]
 }
