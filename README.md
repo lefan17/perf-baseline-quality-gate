@@ -213,12 +213,17 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 > 它不该成为跑仓库的门槛。配置渲染是纯函数，`tests/test_proxy_probe.py` 里
 > 8 条不依赖 nginx 的用例守着「1.1/空 Connection 与 1.0/close 不能写反」。
 >
-> **但 CI 上装了 nginx。** 为什么：那条集成用例
-> （`test_proxy_returns_the_same_payload_as_direct`）在没有 nginx 的机器上是 `skip`，
-> 而**一个永远 skip 的用例等于没有这个用例**。CI 的 `platform-tests` job 会
-> `apt-get install nginx`，于是它从「跳过」变成真断言——同一个后端，经代理与直连
-> 拿到的 status 与 JSON 必须相等。探针本身的三口径数字只贴进 step summary，
-> **不断言比值**：共享 runner 上 1.21x / 1.70x 抖动太大，断言它只会制造一条随机红的用例。
+> **CI 里显式装了 nginx**，理由不是「没有它跑不了」，而是**不要把可重复性押在
+> runner 镜像的巧合上**：`ubuntu-latest` 目前自带 `/usr/sbin/nginx`，所以那条集成用例
+> （`test_proxy_returns_the_same_payload_as_direct`）本来就能跑（suite 一直是
+> `通过 318 / 跳过 0`）；但镜像哪天不带了，它会**安静地变成 skip** —— 一条永远 skip
+> 的用例等于没有这个用例。所以现在显式 `apt-get install nginx`。
+>
+> 另外 CI 会跑一次三口径探针（5000 条 / 10 并发 / 每口径 5 秒），把数字贴进
+> step summary，**但不断言比值**：共享 runner 上 1.21x / 1.70x 抖动太大，断言它只会
+> 制造一条随机红的用例。这一步配了 `set -euo pipefail` —— 因为第一版忘了，
+> `python … | tee` 的退出码取 tee 的 0，探针崩了这步照样绿（日志里躺着一段
+> Traceback）。**加了管道却忘了 pipefail，就是自己造一条假绿。**
 
 ### 6. 连接池：「接不住」要以 503 现身，而不是 500
 

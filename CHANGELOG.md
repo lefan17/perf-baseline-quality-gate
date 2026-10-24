@@ -16,13 +16,19 @@
 
 ### 变更（CI）
 
-- **`platform-tests` job 装上 nginx，让那条反向代理集成用例从 `skip` 变成断言。**
-  `tests/test_proxy_probe.py::test_proxy_returns_the_same_payload_as_direct` 原本在
-  没有 nginx 的机器上是 `skip`，而一个永远 skip 的用例等于没有这个用例。
-  CI 里 `apt-get install nginx` 之后它真跑：同一个后端，经代理与直连拿到的 status
-  与 JSON 必须逐字节相等。另加一步跑 `scripts/proxy_probe.py --items 5000 --users 10
-  --duration 5`，把三口径数字贴进 step summary，**但不断言比值**——共享 runner 上
-  1.21x / 1.70x 抖动太大，断言它只会制造一条随机红的用例。
+- **`platform-tests` job 显式安装 nginx，并跑一次三口径探针。**
+  这不是「加了新能力」，而是**去掉对 runner 镜像的隐含依赖**：`ubuntu-latest`
+  目前自带 `/usr/sbin/nginx`，反向代理集成用例
+  （`test_proxy_returns_the_same_payload_as_direct`）本来就能跑（suite 一直是
+  `通过 318 / 跳过 0`）；镜像哪天不带了，它会**安静地变成 skip**。现在显式
+  `apt-get install nginx`，依赖写在 workflow 里而不是猜。
+  另加一步跑 `scripts/proxy_probe.py --items 5000 --users 10 --duration 5`，
+  数字贴进 step summary，**不断言比值**（共享 runner 上 1.21x / 1.70x 抖动太大）。
+- **修一个自己造出来的假绿**：探针那一步第一版没设 `PYTHONPATH`（`python scripts/x.py`
+  的 `sys.path[0]` 是 `scripts/`，`from bench.engine import ...` 直接
+  `ModuleNotFoundError`），又用了 `python … | tee` 而没开 `pipefail`——退出码取
+  tee 的 0，**步骤报 success，日志里躺着一段 Traceback**。现在 `env: PYTHONPATH: .`
+  + `set -euo pipefail` + `grep -q "直连 SUT"` 三重保险。
 
 ### 新增（连接池与反向代理探针）
 

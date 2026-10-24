@@ -214,8 +214,17 @@ jobs:
       # 在共享 runner 上抖动很大，断言它只会制造一条随机红的用例。
       # 这里只保证"探针本身还能跑通、还能出三条口径"——它坏了要立刻知道。
       - name: 反向代理探针三口径（只发布数字，不断言比值）
+        env:
+          # `python scripts/xxx.py` 的 sys.path[0] 是 scripts/，不是仓库根，
+          # 所以不设 PYTHONPATH 会 ModuleNotFoundError: No module named 'bench'。
+          PYTHONPATH: .
         run: |
+          # pipefail 必须有：没有它，`python … | tee` 的退出码是 tee 的 0，
+          # 探针崩了这一步照样绿。**这正是本仓库反复在说的那类假绿**——
+          # 加这个管道的时候就该想到，第一版果然踩了（build 出了 0 报错却什么都没打印）。
+          set -euo pipefail
           python scripts/proxy_probe.py --items 5000 --users 10 --duration 5 | tee /tmp/proxy-probe.txt
+          grep -q "直连 SUT" /tmp/proxy-probe.txt
           {
             echo "## 反向代理探针（本轮 CI 实测）"
             echo ""
