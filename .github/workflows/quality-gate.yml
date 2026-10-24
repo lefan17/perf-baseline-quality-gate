@@ -186,7 +186,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-          --default-authentication-plugin=mysql_native_password
     steps:
       - uses: actions/checkout@v4
 
@@ -209,6 +208,21 @@ jobs:
           PERF_REDIS_URL: 127.0.0.1:6379
         run: |
           python -c "import os, socket; h, _, p = os.environ['PERF_REDIS_URL'].partition(':'); s = socket.create_connection((h, int(p)), timeout=3); s.sendall(b'PING\r\n'); r = s.recv(64); s.close(); print('Redis OK' if b'PONG' in r else 'REPLY ' + repr(r))"
+
+      # `services.options` 只能是 `docker create` 的**参数**，不能给容器塞命令 ——
+      # 所以 `--default-authentication-plugin=mysql_native_password` 写在这里会报
+      # `unknown flag`（第一次 CI 就栽在这，docker create 退出码 125）。
+      # 换个做法：容器按官方默认起来（caching_sha2_password），再用 root 把
+      # 业务用户的认证插件切过去。
+      #
+      # **为什么要切**：MySQL 8 默认 caching_sha2_password，而纯 Python 的 PyMySQL
+      # 完成首次认证需要 `cryptography`（RSA 交换），不装就报
+      # `RuntimeError: 'cryptography' package is required for sha256_password or
+      # caching_sha2_password auth methods`（本机实测过）。生产里更合理的做法是
+      # 装上 cryptography 或让连接走 TLS；这里不切是为了**不再撑大依赖清单**。
+      - name: 把 perf 用户切成 mysql_native_password
+        run: |
+          docker exec ${{ job.services.mysql.id }} mysql -uroot -pperfroot -e "ALTER USER 'perf'@'%' IDENTIFIED WITH mysql_native_password BY 'perfpass'; FLUSH PRIVILEGES;"
 
       # MySQL 的"可达"必须用**驱动真连一次**来判，不能探端口：
       # 端口开着但认证失败、库不存在，对用例来说都是"连不上"，

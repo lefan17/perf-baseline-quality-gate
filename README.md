@@ -288,6 +288,15 @@ SUT 主库仍是 SQLite —— **这是自写的池，不是 MySQL 的池**，�
 | item 不存在 | **404** | 与「库存不足」必须能分开，否则调用方只能笼统重试 |
 | 扣成负数 | **409**（并回滚） | 报错了但数据已经写坏，是最糟的一种"成功" |
 
+> **CI 里还踩了一个 Docker 的坑**：`services.options` 只能是 `docker create` 的
+> **参数**，不能给容器塞命令 —— 把 `--default-authentication-plugin=mysql_native_password`
+> 写进去会被当成 docker 自己的 flag，报 `unknown flag`（退出码 125）。
+> 改成「容器按官方默认起（`caching_sha2_password`），再用 root 把业务用户切到
+> `mysql_native_password`」。为什么非切不可：纯 Python 的 PyMySQL 完成
+> `caching_sha2` 首次认证需要 `cryptography`（RSA 交换），不装直接报
+> `RuntimeError: 'cryptography' package is required for ...`。生产里更合理的做法是
+> 装上它或让连接走 TLS；这里不装是为了不再撑大依赖清单。
+
 > **这个探针我第一次跑就踩了自己的坑**：`--items 5000`，但场景模块不知道
 > 数据量，默认按 20000 取 ID，于是大部分请求打到不存在的 item 上 ——
 > SQLite 口径错误率 72%、P95 却只有 244ms。原因很简单：**404 比写事务快得多**。
