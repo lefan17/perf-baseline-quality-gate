@@ -28,10 +28,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from sut.cache import ItemCache
-from sut.db import connect
+from sut.db import connect, get_pool, pool_size
+from sut.pool import PoolExhaustedError
 from sut.redis_client import Redis
 
 app = FastAPI(title="Inventory Perf SUT", version="1.0.0")
@@ -41,6 +43,33 @@ N1_SUPPLIER_LIMIT = int(os.environ.get("PERF_SUT_N1_SUPPLIERS", "40"))
 
 #: Redis 地址。留空 / 设为 `off` 时**不连**，所有缓存路径退化成直查数据库。
 REDIS_URL = "PERF_REDIS_URL"
+
+
+@app.exception_handler(PoolExhaustedError)
+async def _pool_exhausted_handler(request: Request, exc: PoolExhaustedError) -> JSONResponse:
+    """连接池打满 → **503** + `Retry-After`，而不是 500。
+
+    为什么这个区分很重要：
+
+    - 500 在监控里等于"服务有 bug"，值班的人第一反应是回滚；
+    - 503 表示"服务是好的，只是这一下接不住"，正确动作是扩容 / 降并发 / 加排队预算。
+
+    把资源不足伪装成代码错误，是压测报告里最常见的"结论被误读"来源之一：
+    P95 会因为大量 503 而看起来"很快"（失败请求耗时短），而错误率被记成
+    "服务异常"。两条曲线一起看才会发现是容量问题。
+
+    `Retry-After` 给 1 秒：这个仓的慢查询量级是 10 秒级（`slow-by-supplier`
+    的 n1 模式），1 秒足够让客户端退避一轮而不至于瞬间重试把池再打满。
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "database pool exhausted",
+            "detail": str(exc),
+            "hint": "pool size 不够或慢查询占住了连接；看 /api/_diagnostics/pool 的 saturation 与 timeouts_total",
+        },
+        headers={"Retry-After": "1"},
+    )
 
 
 def _report_mode(explicit: str | None) -> str:
@@ -394,6 +423,20 @@ def diagnostics_cache():
     return CACHE.diagnostics()
 
 
+@app.get("/api/_diagnostics/pool")
+def diagnostics_pool():
+    """连接池的饱和度与超时计数。
+
+    「池耗尽」不是一个能靠猜的状态：`saturation` 贴住 1.0 且 `timeouts_total`
+    在涨，才是池不够；如果 `saturation` 很低但接口在 503，那是别的问题
+    （比如上游挂了），别把两种情况混成一句"数据库扛不住"。
+    """
+    pool = get_pool()
+    if pool is None:
+        return {"enabled": False, "size": 0, "note": "PERF_POOL_SIZE 未设置，连接池未启用（一请求一连接）"}
+    return {"enabled": True, **pool.snapshot()}
+
+
 @app.get("/api/_diagnostics/config")
 def diagnostics_config():
     """把"这一轮跑的是什么配置"变成可查询的事实。
@@ -405,6 +448,8 @@ def diagnostics_config():
         "db": os.environ.get("PERF_SUT_DB", "(default: sut/sut.db)"),
         "report_mode": _report_mode(None),
         "n1_suppliers": N1_SUPPLIER_LIMIT,
+        "pool_size": pool_size(),
+        "redis_url": os.environ.get(REDIS_URL, "") or "(off)",
         "python": sys.version.split()[0],
         "fastapi": __import__("fastapi").__version__,
         "uvicorn": __import__("uvicorn").__version__,
