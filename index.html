@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>性能基线 · 质量门禁看板</title>
+<style>
+ :root { color-scheme: light dark; }
+ body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        margin: 0; padding: 28px; background:#0d1117; color:#e6edf3; }
+ h1 { font-size: 20px; margin: 0 0 4px; }
+ h2 { font-size: 15px; margin: 28px 0 10px; color:#9da7b3; font-weight:600;
+       text-transform: uppercase; letter-spacing:.06em; }
+ .muted { color:#8b949e; }
+ .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+ table { border-collapse: collapse; width: 100%; font-size: 13px; }
+ th, td { padding: 7px 10px; border-bottom: 1px solid #21262d; text-align: left; }
+ th { color:#9da7b3; font-weight:600; font-size: 12px; }
+ td.num { text-align: right; font-variant-numeric: tabular-nums; }
+ .badge { padding:1px 7px; border-radius: 10px; font-size: 11px; }
+ .ok { background:#133620; color:#3fb950; } .bad { background:#3d1418; color:#f85149; }
+ .warn { background:#3a2d10; color:#d29922; }
+ ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
+ .note { background:#161b22; border:1px solid #21262d; border-radius:6px;
+          padding:12px 14px; font-size:12.5px; line-height:1.7; color:#9da7b3; }
+ code { background:#161b22; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style></head><body>
+<h1>性能基线 · 质量门禁看板</h1>
+<p class="muted mono">静态快照 · 生成于 2026-10-24 14:28:52 +0000 · 数据源 quality.db（CI 本轮）</p>
+
+<h2>最近运行</h2>
+<table><thead><tr><th>run_id</th><th>类型</th><th>标签</th><th>状态</th>
+<th>P95(ms)</th><th>P99(ms)</th><th>RPS</th><th>错误率</th><th>开始时间</th></tr></thead>
+<tbody><tr><td class="mono">perf-20261024-142834-42a61b</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">45.9</td><td class="num">66.9</td><td class="num">453.2</td><td class="num">0.00%</td><td class="muted">2026-10-24T14:28:34</td></tr><tr><td class="mono">perf-20261024-141832-9f91ee</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">120.1</td><td class="num">172.2</td><td class="num">361.2</td><td class="num">0.00%</td><td class="muted">2026-10-24T14:18:32</td></tr><tr><td class="mono">perf-20261024-134726-6188bb</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">131.2</td><td class="num">500.1</td><td class="num">343.6</td><td class="num">0.00%</td><td class="muted">2026-10-24T13:47:27</td></tr><tr><td class="mono">perf-20261024-133621-e39a5f</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">57.9</td><td class="num">88.5</td><td class="num">452.3</td><td class="num">0.00%</td><td class="muted">2026-10-24T13:36:22</td></tr><tr><td class="mono">perf-20261024-131929-be32de</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">137.7</td><td class="num">180.9</td><td class="num">357.7</td><td class="num">0.00%</td><td class="muted">2026-10-24T13:19:30</td></tr><tr><td class="mono">perf-20261024-131230-9d6b27</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">132.5</td><td class="num">187.3</td><td class="num">348.3</td><td class="num">0.00%</td><td class="muted">2026-10-24T13:12:30</td></tr><tr><td class="mono">perf-20261024-122327-73ef12</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">123.7</td><td class="num">163.2</td><td class="num">368.3</td><td class="num">0.00%</td><td class="muted">2026-10-24T12:23:27</td></tr><tr><td class="mono">perf-20261024-121726-e4e07a</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">44.8</td><td class="num">184.4</td><td class="num">452.9</td><td class="num">0.00%</td><td class="muted">2026-10-24T12:17:26</td></tr><tr><td class="mono">perf-20261024-112046-132a25</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">67.4</td><td class="num">88.7</td><td class="num">355.7</td><td class="num">0.00%</td><td class="muted">2026-10-24T11:20:46</td></tr><tr><td class="mono">perf-20261024-111151-c69e4a</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">128.4</td><td class="num">177.3</td><td class="num">355.6</td><td class="num">0.00%</td><td class="muted">2026-10-24T11:11:51</td></tr><tr><td class="mono">perf-20261024-110721-131250</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">48.7</td><td class="num">187.4</td><td class="num">451.7</td><td class="num">0.00%</td><td class="muted">2026-10-24T11:07:22</td></tr><tr><td class="mono">perf-20261019-104815-8b456e</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">67.4</td><td class="num">89.1</td><td class="num">370.9</td><td class="num">0.00%</td><td class="muted">2026-10-19T10:48:15</td></tr><tr><td class="mono">perf-20261019-085717-a0a283</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">47.1</td><td class="num">148.5</td><td class="num">473.0</td><td class="num">0.00%</td><td class="muted">2026-10-19T08:57:17</td></tr><tr><td class="mono">perf-20261019-085110-9909cd</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">140.6</td><td class="num">195.4</td><td class="num">363.6</td><td class="num">0.00%</td><td class="muted">2026-10-19T08:51:10</td></tr><tr><td class="mono">perf-20261019-075555-a54712</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">57.9</td><td class="num">242.6</td><td class="num">347.8</td><td class="num">0.00%</td><td class="muted">2026-10-19T07:55:55</td></tr><tr><td class="mono">perf-20261019-054833-14d052</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">72.2</td><td class="num">155.2</td><td class="num">351.2</td><td class="num">0.00%</td><td class="muted">2026-10-19T05:48:33</td></tr><tr><td class="mono">perf-20261018-121143-9d3654</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">66.8</td><td class="num">93.5</td><td class="num">345.2</td><td class="num">0.00%</td><td class="muted">2026-10-18T12:11:43</td></tr><tr><td class="mono">perf-20261018-120137-a39b0b</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">70.1</td><td class="num">99.6</td><td class="num">329.3</td><td class="num">0.00%</td><td class="muted">2026-10-18T12:01:37</td></tr><tr><td class="mono">perf-20261018-115543-6935e5</td><td>perf</td><td>ci-dashboard</td><td><span class="badge ok">passed</span></td><td class="num">41.4</td><td class="num">54.4</td><td class="num">553.0</td><td class="num">0.00%</td><td class="muted">2026-10-18T11:55:43</td></tr></tbody></table>
+
+<h2>P95 趋势</h2>
+<div style="margin:6px 0 14px"><div class="mono" style="margin-bottom:3px">perf/ci-dashboard <span class="muted">P95 走势（19 轮）· 持平</span></div><svg width="420" height="44" role="img"><polyline points="2.0,42.0 25.1,30.4 48.2,31.7 71.3,29.6 94.4,35.4 117.6,2.0 140.7,39.7 163.8,31.5 186.9,39.1 210.0,6.9 233.1,31.5 256.2,40.6 279.3,8.8 302.4,5.3 325.6,3.2 348.7,35.3 371.8,5.8 394.9,10.3 418.0,40.2" fill="none" stroke="#2f81f7" stroke-width="1.6"/></svg></div>
+
+<h2>当前基线</h2>
+<ul><li><span class="mono">perf/ci-perf</span> → perf-20261016-161127-180f9d，P95 53.9ms，RPS 433.4，<span class="muted">set 2026-10-24T14:28:34</span></li></ul>
+
+<h2>flaky 用例</h2>
+<ul><li class="muted">没有达到 flaky 判定的用例（需要 ≥6 次执行且结果摇摆）</li></ul>
+
+<h2>接口</h2>
+<div class="note">
+<code>GET /api/runs?kind=perf&amp;label=...</code> 运行列表 ·
+<code>GET /api/runs/&lt;run_id&gt;</code> 单轮明细（含各梯度与门禁结果）<br>
+<code>GET /api/trend?label=...</code> 趋势序列与方向 ·
+<code>GET /gate?run_id=...</code> 门禁判定（CI 直接调）<br>
+<code>GET /api/cases/flaky</code> flaky 清单
+</div>
+
+<h2>看板在看什么</h2>
+<div class="note">
+P95 比平均值值得看：平均值会被少数极快的请求拉平，而用户抱怨的永远是长尾。
+RPS 掉、P95 涨、错误率起 —— 这三件事同时出现才是"容量到顶"，
+单独一项抖动通常是噪声（本平台的口径里 10% 以内算持平）。
+</div>
+</body></html>
