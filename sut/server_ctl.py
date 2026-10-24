@@ -133,6 +133,7 @@ def start_sut(
     log_dir: str | None = None,
     extra_env: dict | None = None,
     keep_tmp: bool = False,
+    host: str = "127.0.0.1",
 ) -> SutHandle:
     """起一个被测服务，灌好数据，等它就绪。
 
@@ -142,6 +143,11 @@ def start_sut(
 
     `keep_tmp=True`（调试用）保留临时目录，便于事后翻 uvicorn 日志与库文件；
     默认 False，因为**没人清理正是这批目录累积到 289 组的原因**。
+
+    `host` 默认 `127.0.0.1`（只有本机能访问）。反向代理探针要传 `0.0.0.0`：
+    Docker 容器里的 nginx 通过 `host.docker.internal` 回连宿主时，
+    连的是宿主的对外地址，绑在 127.0.0.1 上的端口它够不到。
+    这个参数**默认值不变**，所以既有调用方的行为与安全性都不受影响。
     """
     port = free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -196,7 +202,7 @@ def start_sut(
             "uvicorn",
             "sut.app:app",
             "--host",
-            "127.0.0.1",
+            host,
             "--port",
             str(port),
             "--log-level",

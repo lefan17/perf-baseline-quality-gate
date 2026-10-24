@@ -1,7 +1,7 @@
 {
   "schema": "evidence-summary@1",
   "repo": "perf-baseline-quality-gate",
-  "collected_at": "2026-10-24T20:20:00+08:00",
+  "collected_at": "2026-10-24T21:05:00+08:00",
   "source": "baselines/ci-perf.json（CI 基线快照，入库文件）",
   "produced_at": "2026-10-16T16:12:58+00:00",
   "run_id": "perf-20261016-161127-180f9d",
@@ -90,6 +90,68 @@
         "判据是「执行计划 SEARCH vs SCAN」+「SQL 层耗时倍数 ≥ 5」两条，前者是确定的、不依赖机器速度的。",
         "这条探针同时守两件事：索引失效真的会慢；索引别被人悄悄删了（删掉后两种写法都变 SCAN，倍数掉到 1 左右，测试变红）。",
         "5 万行时全表扫描约 3ms、索引约 0.12ms；低于这个数据量，差值会小到被 Python 计时精度吃掉。"
+      ]
+    },
+    "pool": {
+      "source": "tests/test_connection_pool.py（11 条：4 条单元 + 3 条配置 + 4 条端到端）",
+      "reproduce": "python -m pytest tests/test_connection_pool.py -v",
+      "produced_at": "2026-10-24T20:38:00+08:00",
+      "behavior": {
+        "exhausted_status": 503,
+        "exhausted_header": "Retry-After: 1",
+        "default_enabled": false,
+        "diagnostics_endpoint": "/api/_diagnostics/pool",
+        "diagnostics_fields": [
+          "in_use",
+          "saturation",
+          "timeouts_total",
+          "avg_wait_ms"
+        ]
+      },
+      "notes": [
+        "实现是**自写的池**（sut/pool.py），不是 MySQL 的池：SUT 主库仍是 SQLite。相同的是现象与判据（503 率、饱和度、获取超时计数），这一点在 README 与测试 docstring 里都写明了，不要读成「接了 MySQL」。",
+        "池默认关闭，既有 318 条用例的口径不受影响；PERF_POOL_SIZE 才开启。",
+        "**不用「慢接口占住连接 + 第二个请求抢」来复现池满**：那个构造依赖接口耗时（n1 的耗时取决于供应商条数，测试库里只有 40 个），时而红时而绿。现在拆成三条确定性的断言：会不会抛（单元）、抛了转成什么（直接调异常处理器）、链路是否可达（diagnostics + 恢复）。",
+        "失败请求耗时短会让 P95 反而「变好」，所以判据必须同时看状态码与 saturation/timeouts_total，不能只看错误率。"
+      ]
+    },
+    "proxy": {
+      "source": "本机实测（Windows 11 / nginx 1.27.2 / 20000 条数据 / 20 用户 / 每口径 8 秒，丢弃前 1 秒热身）",
+      "reproduce": "设置 PERF_NGINX_EXE 指向 nginx 可执行文件（没有则探针自行跳过）；python scripts/proxy_probe.py --items 20000 --users 20 --duration 8",
+      "produced_at": "2026-10-24T20:56:00+08:00",
+      "direct": {
+        "p50_ms": 18.95,
+        "p95_ms": 44.78,
+        "p99_ms": 75.37,
+        "rps": 896.3,
+        "error_rate": 0.0
+      },
+      "proxy_keepalive": {
+        "p50_ms": 32.72,
+        "p95_ms": 54.07,
+        "p99_ms": 76.53,
+        "rps": 573.4,
+        "error_rate": 0.0
+      },
+      "proxy_plain": {
+        "p50_ms": 38.84,
+        "p95_ms": 76.34,
+        "p99_ms": 98.61,
+        "rps": 482.0,
+        "error_rate": 0.1867
+      },
+      "ratios": {
+        "extra_hop_p95": 1.21,
+        "extra_hop_rps": 0.64,
+        "no_upstream_keepalive_p95": 1.7,
+        "no_upstream_keepalive_rps": 0.54
+      },
+      "notes": [
+        "三个口径打的是**同一个后端、同一批 id**，唯一差别是链路：直连 / 经 nginx 且上游 keep-alive（1.1 + Connection \"\"）/ 经 nginx 且上游每次新建（1.0 + close）。",
+        "「多一跳代理」的成本（P95 +21%、RPS −36%）不是被测服务的能力，所以本仓所有基线口径一律是直连。",
+        "「上游连接不复用」在同一份配置里只差两行指令，P95 再 +41%，且错误率从 0.00% 变成 18.67% —— 风险区间在并发把上游连接数推高之后，低并发（5000 条 / 10 用户）下只有 1.10× / 1.19× 且无错误。",
+        "Windows 单进程 nginx + 本机回环，绝对数字不可外推到生产的 Linux 多 worker 部署；可外推的是**方向与量级**：上游不复用连接会同时抬高延迟和错误率。",
+        "固定端口 18090/18091：如果上一次运行崩溃留下了孤儿 nginx，本次会连到那个「旧配置指向已死后端」的实例并得到一堆 502。探针的 stop() 会用 taskkill /T /F 兜底，但排查时先看 `Get-Process nginx`。"
       ]
     }
   },

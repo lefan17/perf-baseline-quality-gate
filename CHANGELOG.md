@@ -14,26 +14,55 @@
 
 ## 未发布
 
+### 新增（连接池与反向代理探针）
+
+- **自实现一个连接池，并让「池耗尽」以 503 而不是 500 现身。**
+  `sut/pool.py`（`ConnectionPool` / `PoolExhaustedError`）不引第三方池：
+  池的语义只有几十行（限流、复用、获取超时、归还），而依赖清单由
+  `check_deps_sync.py` 逐字校验，为一个概念吞一棵依赖树不划算。
+  `sut/db.py` 里用 `_PooledConnection` 把 `sqlite3.Connection` 包了一层
+  （`close()` 的语义改成「归还」、`row_factory` 转发到底层），所以**九个既有路由
+  一行没改**就走上了池。池默认关闭，既有基线口径不受影响。
+  两个刻意的设计：**拿不到连接抛异常而不是返回 None**（返回 None 会让每个调用点
+  都得判空，漏一次就是 AttributeError → 500）；**`PoolExhaustedError` 映射成
+  503 + `Retry-After: 1`**（500 会被当成 bug 去回滚，503 才表示「接不住、要扩容」）。
+  `/api/_diagnostics/pool` 同时暴露 `saturation` 与 `timeouts_total` ——
+  只报错误率分不出「池满了」和「代码挂了」：前者失败请求耗时很短，
+  **P95 反而会「变好」**，这是压测报告里最经典的骗人组合。
+
+- **反向代理探针：多一跳代理、以及上游连接复不复用，各值多少。**
+  `scripts/proxy_probe.py` 三个口径打同一个后端（20 000 条数据 / 20 并发 /
+  每个口径 8 秒、丢弃前 1 秒热身）：直连 P95 **44.78ms** / RPS **896.3** /
+  错误率 0.00%；经 nginx 且上游 keep-alive（`proxy_http_version 1.1` +
+  `Connection ""`）P95 54.07ms / RPS 573.4 / 0.00%；经 nginx 但上游每次新建
+  （`1.0` + `Connection close`）P95 **76.34ms** / RPS **482.0** /
+  错误率 **18.67%**。同一份配置只差两行指令，错误率从 0 变成 18.67% ——
+  「代理没开 keep-alive 会被误判成服务端扛不住」的最小可复现例子。
+  低并发（5000 条 / 10 并发）下这个差小得多（P95 1.10× / 1.19×，且无错误），
+  所以真正的风险区间是**上游连接数被并发推高之后**，这一点也写进了 README。
+  没有 nginx 时探针打印安装提示并以 0 退出：它不该成为跑仓库的门槛。
+
+- **`start_sut(host=...)`**：默认仍是 `127.0.0.1`，反向代理探针需要对外时
+  显式传 `0.0.0.0`。加这个参数是因为先试过 Docker 容器反代 —— 容器里
+  `host.docker.internal` 解析得到却回连不到宿主的 `127.0.0.1`。
+
 ### 新增（缓存与索引探针）
 
 - **接入一台真 Redis，并补上三条最容易出事的缓存失效路径。**
-  sut/redis_client.py 是纯标准库的 RESP2 客户端（不引 
-edis 包：依赖清单
+  sut/redis_client.py 是纯标准库的 RESP2 客户端（不引 `redis` 包：依赖清单
   由 check_deps_sync.py 逐字校验，而压测引擎本来就要求每 worker 自持连接）；
   sut/cache.py 是缓存层，GET /api/items/{id}/detail 支持 cache=on|off。
   被单独盯住的三条：**穿透**（负缓存哨兵 __PERF_MISS__）、**一致性**
   （失效放在 commit 之后，否则并发读会把旧值写回）、**降级**
-  （Redis 连不上时接口照常 200，且 /api/_diagnostics/cache 的 ackend
-  会写成 
-one —— 降级不允许静默发生）。CI 的 platform-tests 用
-  service container 起 
-edis:7-alpine；连不上时那批用例自动 skip。
+  （Redis 连不上时接口照常 200，且 /api/_diagnostics/cache 的 `backend`
+  会写成 `none` —— 降级不允许静默发生）。CI 的 platform-tests 用
+  service container 起 `redis:7-alpine`；连不上时那批用例自动 skip。
   实测（5000 条数据 / 10u / 8s / 同一个 500 条热点集）：
   cache=on P95 **16.8ms**（5520 次）vs cache=off P95 **36.9ms**（4593 次），**2.2×**。
 
 - **索引失效探针：把「本该快」做成可断言的东西。**
   GET /api/items 新增 index=false，把过滤列包进 substr() 让索引失效。
-  	ests/test_index_probe.py（4 条）在 SQL 层断言两件事：执行计划必须一个是
+  `tests/test_index_probe.py`（4 条）在 SQL 层断言两件事：执行计划必须一个是
   SEARCH、一个是 SCAN；全表扫描必须比索引查找慢 5 倍以上（实测 10 万行下
   **0.218ms vs 6.337ms，29×**）。
   **刻意不做端到端断言**：同样的 29 倍，套上 HTTP 后单请求固定开销约 25ms
