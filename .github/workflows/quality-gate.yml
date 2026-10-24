@@ -191,11 +191,40 @@ jobs:
         run: |
           python -c "import os, socket; h, _, p = os.environ['PERF_REDIS_URL'].partition(':'); s = socket.create_connection((h, int(p)), timeout=3); s.sendall(b'PING\r\n'); r = s.recv(64); s.close(); print('Redis OK' if b'PONG' in r else 'REPLY ' + repr(r))"
 
+      # 为什么要在 CI 里装 nginx：`tests/test_proxy_probe.py` 里那条集成用例
+      # （`test_proxy_returns_the_same_payload_as_direct`）在没有 nginx 的机器上是 skip。
+      # 一个永远 skip 的用例等于没有这个用例 —— 装上 nginx，它就从「跳过」变成「断言」：
+      # 同一个后端，经代理与直连拿到的 status 与 JSON 必须逐字节相等。
+      # 探针本身的三口径数字不会在这里断言（runner 噪声大），只发布到 step summary。
+      - name: 安装 nginx（让反向代理集成用例真正执行，而不是被 skip）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx
+          nginx -v
+          which nginx || ls -l /usr/sbin/nginx
+
       - name: 跑用例并入库（结果写进 quality.db，供后续趋势/flaky 分析）
         env:
           PERF_REDIS_URL: 127.0.0.1:6379
         run: |
           python platform_cli.py suite --label platform-tests
+
+      # 探针跑一次，把三口径数字贴进 step summary。
+      # **不断言比值**：CI runner 与被测服务抢同一份 CPU，1.21x / 1.70x 这类数字
+      # 在共享 runner 上抖动很大，断言它只会制造一条随机红的用例。
+      # 这里只保证"探针本身还能跑通、还能出三条口径"——它坏了要立刻知道。
+      - name: 反向代理探针三口径（只发布数字，不断言比值）
+        run: |
+          python scripts/proxy_probe.py --items 5000 --users 10 --duration 5 | tee /tmp/proxy-probe.txt
+          {
+            echo "## 反向代理探针（本轮 CI 实测）"
+            echo ""
+            echo '```'
+            cat /tmp/proxy-probe.txt
+            echo '```'
+            echo ""
+            echo "> 绝对数字在共享 runner 上不可外推；能看的是方向：上游不复用连接时 P95 与错误率怎么变。"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # suite 子命令失败即退出码 1，CI 自动红。
       # 上一步同时完成了"跑测试 + 入库 + 套件门禁"三件事，

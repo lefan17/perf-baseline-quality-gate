@@ -212,6 +212,13 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 > 这个探针**没有 nginx 也能跑**：`find_nginx()` 找不到时打印安装提示并以 0 退出，
 > 它不该成为跑仓库的门槛。配置渲染是纯函数，`tests/test_proxy_probe.py` 里
 > 8 条不依赖 nginx 的用例守着「1.1/空 Connection 与 1.0/close 不能写反」。
+>
+> **但 CI 上装了 nginx。** 为什么：那条集成用例
+> （`test_proxy_returns_the_same_payload_as_direct`）在没有 nginx 的机器上是 `skip`，
+> 而**一个永远 skip 的用例等于没有这个用例**。CI 的 `platform-tests` job 会
+> `apt-get install nginx`，于是它从「跳过」变成真断言——同一个后端，经代理与直连
+> 拿到的 status 与 JSON 必须相等。探针本身的三口径数字只贴进 step summary，
+> **不断言比值**：共享 runner 上 1.21x / 1.70x 抖动太大，断言它只会制造一条随机红的用例。
 
 ### 6. 连接池：「接不住」要以 503 现身，而不是 500
 

@@ -14,6 +14,16 @@
 
 ## 未发布
 
+### 变更（CI）
+
+- **`platform-tests` job 装上 nginx，让那条反向代理集成用例从 `skip` 变成断言。**
+  `tests/test_proxy_probe.py::test_proxy_returns_the_same_payload_as_direct` 原本在
+  没有 nginx 的机器上是 `skip`，而一个永远 skip 的用例等于没有这个用例。
+  CI 里 `apt-get install nginx` 之后它真跑：同一个后端，经代理与直连拿到的 status
+  与 JSON 必须逐字节相等。另加一步跑 `scripts/proxy_probe.py --items 5000 --users 10
+  --duration 5`，把三口径数字贴进 step summary，**但不断言比值**——共享 runner 上
+  1.21x / 1.70x 抖动太大，断言它只会制造一条随机红的用例。
+
 ### 新增（连接池与反向代理探针）
 
 - **自实现一个连接池，并让「池耗尽」以 503 而不是 500 现身。**
