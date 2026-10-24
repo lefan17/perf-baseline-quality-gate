@@ -498,6 +498,18 @@ jobs:
             echo "远端还没有 gh-pages 分支（首次发布）"
           fi
 
+      - name: 导入 CI 基线快照（让看板的「当前基线」不再是空的）
+        # gate 在 perf-gate job 里 import 了 `baselines/ci-perf.json`，所以 R3 是有
+        # 对比对象的；但 pages 是**另一个 job、另一份空库**，不 import 的话看板会
+        # 一直显示「还没有基线」——于是线上出现自相矛盾：
+        # 门禁按基线判过了，看板却说从来没有基线。导入同一份快照即可对齐。
+        run: |
+          if [ -f baselines/ci-perf.json ]; then
+            python platform_cli.py baseline import --label ci-perf
+          else
+            echo "::warning::没有 baselines/ci-perf.json —— 看板会显示「还没有基线」"
+          fi
+
       - name: 跑一轮压测产生本轮数据
         # 这一轮的数据只给看板用：门禁在 perf-gate 里已经判过了，
         # 这里要的是"这次提交在图上落一个点"。参数取小值，别让看板 job
