@@ -22,7 +22,7 @@ coverage==7.16.2
 # ---- 契约校验 ----
 jsonschema==4.26.0
 PyYAML==6.0.3
-PyMySQL==1.1.1
+PyMySQL==1.2.3
 # 说明 1：本平台的压测引擎是自研的（bench/engine.py），不依赖 Locust。
 #   理由见 README「为什么不用 Locust，而要自己写引擎」。
 # 说明 2：不引入 pytest-xdist。平台用例里有真实压测，并行跑会让
