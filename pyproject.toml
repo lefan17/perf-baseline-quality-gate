@@ -34,7 +34,7 @@ dependencies = [
     "coverage==7.16.2",
     "jsonschema==4.26.0",
     "PyYAML==6.0.3",
-    "PyMySQL==1.1.1",
+    "PyMySQL==1.2.3",
 ]
 
 [project.optional-dependencies]
