@@ -11,7 +11,7 @@
 # 版本取 `python -m pip list --format=freeze` 的实测值，不是抄来的。
 
 # ---- 被测服务（本地自建，无需公网）----
-fastapi==0.143.2
+fastapi==0.161.0
 uvicorn==0.54.0
 # ---- 压测引擎与接口调用 ----
 requests==2.34.2
