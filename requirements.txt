@@ -18,7 +18,7 @@ requests==2.34.2
 # ---- 平台自身测试 ----
 pytest==9.1.1
 pytest-cov==7.1.0
-coverage==7.16.2
+coverage==7.17.0
 # ---- 契约校验 ----
 jsonschema==4.26.0
 PyYAML==6.0.3
