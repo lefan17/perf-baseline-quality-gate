@@ -46,7 +46,7 @@ dependencies = [
 # 版本未经实测 → **刻意不写版本号**，而不是编一个看起来专业的数字。
 # 首次在可联网机器上装好后，应当立刻把它们钉死，理由同 requirements.txt 头部。
 dev = [
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "mypy==2.4.0",
     "pip-tools==7.6.2",
     "pre-commit",
