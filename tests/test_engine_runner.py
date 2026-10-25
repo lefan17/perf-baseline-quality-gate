@@ -254,6 +254,27 @@ class TestRun:
         # 这里顺带钉住它不会算出 0 或负数。
         assert st.rps > 0
 
+    def test_warmup_drop_never_empties_the_sample_set(self, base_url):
+        """热身窗口比整轮还长时，必须回退用全部样本，而不是交出一份空统计。
+
+        这是 `bench/engine.py:342` 那个 `if kept:` 兜底存在的理由。去掉它，
+        `samples` 会变成 `[]`，`summarize` 返回 `total=0 / p95=0.0 / rps=0.0`
+        —— 一份**看起来极快**的报告。而它其实是"什么都没测到"。
+
+        为什么这个兜底容易写丢：正常路径下 `kept` 永远非空，只有在
+        `warmup_drop_s >= duration_s`（或整轮跑得比预期快很多）时才触发。
+        也就是说**默认配置永远不会走到这里**，它只为异常情况存在。
+
+        承重说明：把 `if kept:` 换成无条件的 `samples = kept`，本用例
+        必须 FAILED（拿到 `total == 0`）。实测确认过这一点。
+        """
+        # 时长 0.3s，热身却要丢 30s —— 所有样本都在窗口内
+        r = Runner(base_url, [(_scenario(base_url), 1)], users=2, duration_s=0.3, warmup_drop_s=30.0)
+        st = r.run()
+        assert st.total > 0, "热身窗口吞掉全部样本时，不该交出一份 total=0 的空报告"
+        assert st.p95_ms > 0, "空统计的 P95 是 0.0，读起来像『快得不可思议』"
+        assert st.rps > 0
+
     def test_think_time_limits_throughput(self, base_url):
         # think_time_s 是"每个用户每次请求后歇一下"。它必须真的降低吞吐，
         # 否则混压场景里一个慢接口会把并发全吃掉，其他接口的样本数
