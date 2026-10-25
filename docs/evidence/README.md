@@ -95,6 +95,9 @@ python scripts/mysql_probe.py --items 5000 --users 10 --duration 8
 6. **同一台机器上的「分布式」只是多进程。** 3 个 worker 抢同一块 CPU，实测对单进程
    RPS **0.96×**（`probes.distributed`）。这个比值反映压测端的开销分摊，
    不代表被测服务的扩容能力；它的真实用途是「把压测机的天花板推开一点」。
-7. **分布式里的 `naive_weighted_average_p95_ms` 是错误口径，故意留着当对照。**
+7. **时钟偏移本身也是环境的属性。** 同一台 Windows 上三个进程估出 6.8~8.6ms
+   （`hello` 往返的一半 RTT 误差），CI 的 ubuntu-latest 上是 0.12~0.18ms。
+   别拿本机的偏移去推断跨机器部署会怎样 —— 跨机器要靠 NTP/chrony。
+8. **分布式里的 `naive_weighted_average_p95_ms` 是错误口径，故意留着当对照。**
    本次运行里 84.62ms 与池化 85.45ms 很接近，但这不是"两种算法都行"：
    分布一旦偏斜，加权平均会把 900ms 报成 91ms（见 `tests/test_distributed.py`）。

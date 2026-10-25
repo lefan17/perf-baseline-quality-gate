@@ -284,8 +284,50 @@
         "naive 口径（按样本数加权平均各 worker p95）在本次运行里和池化值接近，但它是错的：worker 分布偏斜时会把 900ms 报成 91ms（见 tests/test_distributed.py 的对照组）。",
         "分位数是顺序统计量，合并必须回到原始样本；协议回传原始数组，20 000 个样本约 300KB。",
         "窗口 8.05s 是整轮的统一窗口，不是各 worker 耗时之和。",
-        "时钟偏移 8.62ms 是 hello 往返估出的上界（含一半 RTT），同机多进程本来就不该大。"
-      ]
+        "时钟偏移 8.62ms 是 hello 往返估出的上界（含一半 RTT），同机多进程本来就不该大。",
+        "CI 上的时钟偏移只有 0.12~0.18ms（本机 Windows 是 6.8~8.6ms）：同一台 runner 上三个进程共享同一时钟源，这个差距说明『偏移值本身也是环境的属性』，不能拿本机的偏移去推断跨机器部署会怎样。",
+        "CI 那一步只验证链路（进程起得来、端口拿得到、样本不丢），不对比值下任何结论：3 个 worker 抢同一块 CPU。"
+      ],
+      "profiles_windows": {
+        "note": "本机，单进程 SUT，8 秒窗口",
+        "single_process": {
+          "total": 2808,
+          "rps": 397.81,
+          "p50_ms": 33.89,
+          "p95_ms": 78.58,
+          "p99_ms": 104.48,
+          "error_rate": 0.0
+        },
+        "distributed_pooled": {
+          "total": 2701,
+          "rps": 382.9,
+          "p50_ms": 33.95,
+          "p95_ms": 85.45,
+          "p99_ms": 126.61,
+          "error_rate": 0.0
+        },
+        "window_s": 8.05,
+        "max_clock_skew_ms": 8.62
+      },
+      "profiles_ci": {
+        "note": "GitHub Actions ubuntu-latest，run 40163230983，3 worker × 4 并发，5 秒窗口，只验证链路",
+        "distributed_pooled": {
+          "total": 1554,
+          "rps": 385.9,
+          "p50_ms": 27.17,
+          "p95_ms": 62.16,
+          "p99_ms": 79.03,
+          "error_rate": 0.0
+        },
+        "naive_weighted_average_p95_ms": 61.8,
+        "window_s": 5.03,
+        "max_clock_skew_ms": 0.18,
+        "per_worker_rps": [
+          130.25,
+          124.94,
+          130.95
+        ]
+      }
     }
   },
   "notes": [
