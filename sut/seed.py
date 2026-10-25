@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sut.db import connect, db_path, init_db  # noqa: E402
+from sut.envconf import env_int  # noqa: E402
 
 DEFAULT_ITEMS = 20_000
 CATEGORY_NAMES = [
@@ -33,8 +34,21 @@ SUPPLIER_NAMES = [f"供应商-{i:03d}" for i in range(1, 41)]
 
 
 def seed(items: int | None = None, force: bool = False) -> dict:
-    """建表并灌入演示数据。已存在数据且未 force 时直接返回现状。"""
-    items = items or int(os.environ.get("PERF_SUT_ITEMS", DEFAULT_ITEMS))
+    """建表并灌入演示数据。已存在数据且未 force 时直接返回现状。
+
+    `items=0` 是**显式请求零条数据**，不是"没传参数"：原先写成
+    `items = items or int(...)`，`0` 是 falsy，于是 `seed(items=0)` 会静默
+    灌进去两万条 —— 一个想量"空库下接口有多快"的人拿到的是满库的数字，
+    而且日志里没有任何提示。`bench/scenarios.py:52` 的 `configure_item_range`
+    专门用 `max(1, int(...))` 处理 0，说明这个边界作者是知道的，这里漏了。
+
+    所以判断条件必须是 `is None`，与"没传"严格区分开。
+    """
+    if items is None:
+        items = env_int("PERF_SUT_ITEMS", DEFAULT_ITEMS, minimum=0)
+    # 负数一律按 0 处理：`range(-5)` 本来也不产生行，但显式夹住能让
+    # 返回体里的 `items` 与真实插入行数一致（否则报 -5 条，看着像 bug）。
+    items = max(0, int(items))
     conn = connect()
     try:
         init_db(conn)

@@ -159,7 +159,7 @@ def add_json_flags(parser: argparse.ArgumentParser) -> None:
 
     ## 为什么必须有这个
 
-    平台有 9 个子命令，改造前**只有 `baseline show` 输出 JSON**，
+    平台有 12 个子命令，改造前**只有 `baseline show` 输出 JSON**，
     其余全是给人看的表格。而 README 自己写过一句话：
     「只会 `exit 1` 的门禁，在团队里的寿命大约是两周」。
 
@@ -246,7 +246,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                 duration_s=args.step_duration,
                 think_time_s=args.think_time,
                 ramp_up_s=min(2.0, args.step_duration / 4),
-                timeout_s=args.timeout,
                 warmup_drop_s=args.warmup_drop,
             )
             st = runner.run()
@@ -351,7 +350,6 @@ def cmd_probe(args: argparse.Namespace) -> int:
                     duration_s=args.duration,
                     think_time_s=0.0,
                     ramp_up_s=1.0,
-                    timeout_s=args.timeout,
                     warmup_drop_s=args.warmup_drop,
                 )
                 st = runner.run()
@@ -644,8 +642,10 @@ def cmd_gate(args: argparse.Namespace) -> int:
         return 2
     step_dicts = [dict(r) for r in rows]
     merged = _merge_from_rows(step_dicts)
-    label = _label_of(args.run_id)
-    baseline = store.get_baseline("perf", label) if label else None
+    label, kind = _label_and_kind_of(args.run_id)
+    # 按 run 自己的 kind 取基线，不写死 "perf"：probe 轮的基线存在 kind='probe' 下，
+    # 写死 perf 会让它恒取不到、R3 恒 [SKIP]（详见 `_label_and_kind_of` 的说明）。
+    baseline = store.get_baseline(kind, label) if label and kind else None
     deltas = analysis.compare_to_baseline(merged, baseline["metrics"], rules) if baseline else []
     # 被门禁的那轮 run 自己的配置（不是当前命令行的配置）：这是唯一正确的比法，
     # 否则用「今天跑 gate 的环境」去比「当时那轮」的配置。
@@ -671,10 +671,32 @@ def cmd_gate(args: argparse.Namespace) -> int:
     return 1 if report.blocked else 0
 
 
-def _label_of(run_id: str) -> str:
+def _label_and_kind_of(run_id: str) -> tuple[str, str]:
+    """取一轮 run 的 `(label, kind)`。
+
+    ## 为什么 `gate` 必须按 run 自己的 kind 取基线
+
+    基线表的主键是 `(kind, label)`（见 `metrics/store.py` 的 `CREATE TABLE
+    baselines`）。而 `cmd_gate` 原先写的是：
+
+        baseline = store.get_baseline("perf", label)      # kind 写死
+
+    这对 `perf` 轮没问题，对 `probe` 轮是**必然取不到**：probe 轮的
+    `runs.kind` 是 `probe`，它的基线（如果有人设过）存在 `kind='probe'` 下，
+    而这里永远去 `perf` 下找 → 恒返回 None → R3 恒 `[SKIP]`。
+
+    同一个事实，看板和 CLI 给出两种说法：`dashboard/app.py` 早就改成按
+    run 的真实 kind 取了（那里的注释写着「早先这里写死 kind="perf"」），
+    并且有回归用例 `tests/test_dashboard_api.py::test_baseline_lookup_follows_the_actual_run_kind`。
+    CLI 这一侧当时漏了 —— 于是 `probe ... ` 跑出来的轮次，在看板上能看到基线，
+    在 `gate --run-id` 里却报"未设置基线"。两条路径读同一个库，
+    对同一行数据得出不同结论，这是比"没有基线"更坏的处境。
+    """
     with store.tx() as conn:
-        row = conn.execute("SELECT label FROM runs WHERE run_id=?", (run_id,)).fetchone()
-    return row["label"] if row else ""
+        row = conn.execute("SELECT label, kind FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    if not row:
+        return "", ""
+    return row["label"], row["kind"]
 
 
 def _merge_from_rows(rows: list[dict]) -> dict:
@@ -689,18 +711,31 @@ def _merge_from_rows(rows: list[dict]) -> dict:
 
 # --------------------------------------------------------------------------- #
 def cmd_baseline(args: argparse.Namespace) -> int:
+    """基线管理的五个 action。
+
+    ## `--kind` 是 P-20 修复的另一半
+
+    `gate` 那一侧已改成按 run 自己的 kind 取基线（见 `_label_and_kind_of`），
+    但如果 `baseline` 只能写 `kind='perf'`，那个修复就落不了地：probe 轮的
+    基线**没有任何 CLI 入口能设**，于是 `gate --run-id <probe 轮>` 依然恒
+    `[SKIP] 未设置基线` —— 症状一模一样，只是根因从"取错"变成"存不进"。
+
+    只修一半比不修更坏：`gate` 的注释会写"按 kind 取"，读的人以为 probe 轮
+    已经能判了，而实际上没人能给它设基线。
+    """
+    kind = getattr(args, "kind", "perf") or "perf"
     if args.action == "set":
-        runs = store.recent_runs(kind="perf", label=args.label, limit=1)
+        runs = store.recent_runs(kind=kind, label=args.label, limit=1)
         if not runs:
-            print(f"找不到 label={args.label} 的 perf 运行记录", file=sys.stderr)
+            print(f"找不到 label={args.label} 的 {kind} 运行记录", file=sys.stderr)
             return 2
         run_id = args.run_id or runs[0]["run_id"]
         metrics = _run_metrics(run_id)
         if metrics is None:
             print(f"run {run_id} 没有可用的指标", file=sys.stderr)
             return 2
-        store.set_baseline("perf", args.label, run_id, metrics, config=_run_config(run_id))
-        print(f"[baseline] kind=perf label={args.label} run_id={run_id}")
+        store.set_baseline(kind, args.label, run_id, metrics, config=_run_config(run_id))
+        print(f"[baseline] kind={kind} label={args.label} run_id={run_id}")
         # 两个 P95 口径都印出来，否则设基线的人分不清存下的是
         # 「尾比最大的梯度」还是「最慢的梯度」——R2 判的是后者。
         abs_note = ""
@@ -709,24 +744,34 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             abs_note = f"（最慢梯度 p95={abs_p95}ms，R2 按它判）"
         print(f"           p95={metrics['p95_ms']}ms{abs_note} p99={metrics['p99_ms']}ms rps={metrics['rps']}")
         print(f"           下一步：`baseline export --label {args.label}` 把快照提交进仓库，CI 才能拿到这条基线")
-        emit(args, {"action": "set", "kind": "perf", "label": args.label, "run_id": run_id, "metrics": metrics})
+        emit(args, {"action": "set", "kind": kind, "label": args.label, "run_id": run_id, "metrics": metrics})
         return 0
     if args.action == "show":
-        b = store.get_baseline("perf", args.label)
+        b = store.get_baseline(kind, args.label)
         print(json.dumps(b, ensure_ascii=False, indent=2) if b else f"没有 label={args.label} 的基线")
-        emit(args, {"action": "show", "kind": "perf", "label": args.label, "baseline": b})
+        emit(args, {"action": "show", "kind": kind, "label": args.label, "baseline": b})
         return 0
     if args.action == "export":
         return _baseline_export(args)
     if args.action == "import":
         return _baseline_import(args)
     if args.action == "clear":
+        # 这里必须先 `store.init_db()`。原先直接 `from metrics.store import tx`
+        # 开事务，在**全新库**上 `clear` 会 `sqlite3.OperationalError: no such
+        # table: baselines` 并以退出码 1 崩掉 —— 而同一空库上 `show` 是正常
+        # 打印「没有这条基线」并返回 0 的（它走 `store.get_baseline`，那个
+        # 函数内部会 init）。
+        #
+        # 「删一条不存在的基线」和「删一个不存在的表」是两件事：前者是正常
+        # 幂等操作，后者是环境没准备好。混成一个退出码 1，CI 里就分不清是
+        # 清理失败还是本来就没什么可清。
+        store.init_db()
         from metrics.store import tx
 
         with tx() as conn:
-            conn.execute("DELETE FROM baselines WHERE kind='perf' AND label=?", (args.label,))
-        print(f"[baseline] 已清除 label={args.label}")
-        emit(args, {"action": "clear", "kind": "perf", "label": args.label, "cleared": True})
+            conn.execute("DELETE FROM baselines WHERE kind=? AND label=?", (kind, args.label))
+        print(f"[baseline] 已清除 kind={kind} label={args.label}")
+        emit(args, {"action": "clear", "kind": kind, "label": args.label, "cleared": True})
         return 0
     return 2
 
@@ -737,7 +782,8 @@ def _default_snapshot_path(label: str) -> Path:
 
 def _baseline_export(args: argparse.Namespace) -> int:
     """把本机那条基线写成快照文件 —— 人做完这一步再 `git add` 提交。"""
-    b = store.get_baseline("perf", args.label)
+    kind = getattr(args, "kind", "perf") or "perf"
+    b = store.get_baseline(kind, args.label)
     if b is None:
         print(f"没有 label={args.label} 的基线可导出（先跑一轮并用 --set-baseline 设定）", file=sys.stderr)
         return 2
@@ -745,7 +791,7 @@ def _baseline_export(args: argparse.Namespace) -> int:
     # 典型场景：人把 runner 上传的库下载到开发机上导出快照 —— 那时本机与
     # "量出基线的机器"不是同一台，写错了会让后来读快照的人判断错方向。
     measured_on = _run_platform(b["run_id"]) or platform_info()
-    snap = baseline.snapshot_of("perf", args.label, measured_on)
+    snap = baseline.snapshot_of(kind, args.label, measured_on)
     if snap is None:  # pragma: no cover - 上面刚查到过，这里只为类型收口
         print(f"没有 label={args.label} 的基线可导出", file=sys.stderr)
         return 2
@@ -753,20 +799,21 @@ def _baseline_export(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(baseline.dump(snap), encoding="utf-8")
     print(f"[baseline] 已导出快照 {path}")
-    print(f"           run_id={snap['run_id']} set_at={snap['set_at']}")
+    print(f"           kind={kind} run_id={snap['run_id']} set_at={snap['set_at']}")
     m = snap["metrics"]
     print(f"           p95={m.get('p95_ms')}ms p99={m.get('p99_ms')}ms rps={m.get('rps')}")
     print("           ⚠ 请把该文件提交进仓库，CI 的 `baseline import` 才拿得到它；CI 不会自己设基线")
-    emit(args, {"action": "export", "kind": "perf", "label": args.label, "path": str(path), "snapshot": snap})
+    emit(args, {"action": "export", "kind": kind, "label": args.label, "path": str(path), "snapshot": snap})
     return 0
 
 
 def _baseline_import(args: argparse.Namespace) -> int:
     """从快照文件恢复基线。任何一步不对都如实报错（退出码非 0），不猜着读。"""
+    kind = getattr(args, "kind", "perf") or "perf"
     path = Path(args.file) if args.file else _default_snapshot_path(args.label)
     try:
         snap = baseline.load_file(path)
-        baseline.apply(snap, expect_label=args.label)
+        baseline.apply(snap, expect_label=args.label, kind=kind)
     except baseline.SnapshotError as exc:
         print(f"[baseline] 导入失败：{exc}", file=sys.stderr)
         print("[baseline] 基线没有恢复 —— 本轮 R3 会如实报「未设置基线」，不会假装比过了。", file=sys.stderr)
@@ -785,7 +832,7 @@ def _baseline_import(args: argparse.Namespace) -> int:
             f"           该基线量于 {bake.get('platform')} / {bake.get('cpu_count')} 核；"
             f"本轮是本机 {platform_info().get('platform')} —— 机器不同时绝对值不可直接比"
         )
-    emit(args, {"action": "import", "kind": "perf", "label": args.label, "path": str(path), "run_id": snap["run_id"]})
+    emit(args, {"action": "import", "kind": kind, "label": args.label, "path": str(path), "run_id": snap["run_id"]})
     return 0
 
 
@@ -901,7 +948,8 @@ def cmd_noise(args: argparse.Namespace) -> int:
 
     ## 为什么必须有这个命令
 
-    门禁 `R3` 用 3% 作为"算不算劣化"的容忍带。这个 3% 最初是**拍的**。
+    门禁 `R3` 现在用 10% 作为"算不算劣化"的容忍带（`gate_rules.yaml` 的
+    `perf.tolerance.degradation_pct`）。它最初写的是 3%，是**拍的**。
 
     实测立刻打脸：同一份代码、同一配置、连跑两轮，
     P95 从 105.9ms 变到 110.2ms（+4.1%），门禁判「拦住」。
@@ -933,7 +981,6 @@ def cmd_noise(args: argparse.Namespace) -> int:
                     users=users,
                     duration_s=args.step_duration,
                     warmup_drop_s=args.warmup_drop,
-                    timeout_s=args.timeout,
                 )
                 stats_by_step.append(runner.run())
             store.add_steps(run_id, stats_by_step)
@@ -1245,6 +1292,12 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("baseline", help="基线管理")
     b.add_argument("action", choices=["set", "show", "export", "import", "clear"])
     b.add_argument("--label", required=True)
+    b.add_argument(
+        "--kind",
+        default="perf",
+        choices=["perf", "probe"],
+        help="基线所属的类型，默认 perf。probe 轮要设基线必须显式写 --kind probe",
+    )
     b.add_argument("--run-id", default=None)
     b.add_argument("--file", default=None, help="export/import 的快照文件，默认 baselines/<label>.json")
     add_json_flags(b)
@@ -1316,6 +1369,27 @@ def build_parser() -> argparse.ArgumentParser:
     ev = sub.add_parser("env", help="显示当前环境档案与生效的变量")
     add_json_flags(ev)
     ev.set_defaults(func=cmd_env)
+
+    # `--rules` 原先只挂在**顶层** parser 上，于是这两种写法命运不同：
+    #
+    #   platform_cli.py --rules gate_rules.yaml trend --label x   ✅ 能用
+    #   platform_cli.py trend --label x --rules gate_rules.yaml   ❌
+    #       error: unrecognized arguments: --rules gate_rules.yaml （exit 2）
+    #
+    # 而习惯上人都是先写子命令再写参数，`--rules` 又只出现在顶层 `--help` 里
+    # （各子命令的 `--help` 看不到它），所以这条路径基本只会以"参数不认识"的
+    # 形式被撞到 —— 报错指向的是"你打错了"，不是"这个参数位置不对"。
+    #
+    # 修法：给每个子 parser 也挂一份。**default 必须是 `argparse.SUPPRESS`**：
+    # 子 parser 的默认值会写进同一个 namespace 并覆盖父级结果，若这里再写一次
+    # `default=str(DEFAULT_RULES)`，那么顶层写 `--rules X` 会被子 parser 的默认
+    # 值静默盖回仓库那份 —— 一个"参数变成摆设"且完全不报错的失败模式。
+    for _child in sub.choices.values():
+        _child.add_argument(
+            "--rules",
+            default=argparse.SUPPRESS,
+            help="门禁规则 YAML 路径（默认 gate_rules.yaml；写在子命令前后都可以）",
+        )
     return p
 
 

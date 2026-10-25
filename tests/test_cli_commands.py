@@ -169,6 +169,120 @@ class TestGateCommand:
             n = conn.execute("SELECT COUNT(*) c FROM gate_results WHERE run_id=?", (RUN_ID,)).fetchone()["c"]
         assert n > 0
 
+    def test_rejudging_does_not_duplicate_gate_results(self, capsys):
+        """重判同一个 run 不许把结论叠加 —— 判定是快照，不是日志。
+
+        ## 这条原来只断言 `n > 0`
+
+        上一条用例已经证明"落库了"，但它对**行数**没有上界要求。于是
+        `add_gate_results` 里只有 `INSERT` 这个缺陷活了很久：
+
+        ```
+        连跑 3 次 gate --run-id → 五条规则各 3 行，共 15 行
+        dashboard.app._gate_for 按 ORDER BY id 全取 → /api/run 返回 15 条
+        ```
+
+        `cmd_gate` 的用途恰恰是"改完阈值回头复判"，所以这不是少见路径：
+        调阈值时人会连跑好几次，页面上的规则就一层层叠起来。
+
+        ## 为什么断言"恰好等于规则条数"而不是"不重复"
+
+        只断言 `COUNT(DISTINCT rule_id) == COUNT(*)` 的话，一个从不写库的
+        实现也能过（0 == 0）。所以这里同时钉住两件事：
+        1. 三次重判后行数等于**一次**判定的行数（幂等）；
+        2. 规则集合完整（真的有内容，不是空的又"不重复"）。
+        """
+        _seed_run()
+        platform_cli.main(["gate", "--run-id", RUN_ID])
+        capsys.readouterr()
+        with store.tx() as conn:
+            once = conn.execute("SELECT COUNT(*) c FROM gate_results WHERE run_id=?", (RUN_ID,)).fetchone()["c"]
+            rules_once = {
+                r["rule_id"]
+                for r in conn.execute("SELECT rule_id FROM gate_results WHERE run_id=?", (RUN_ID,)).fetchall()
+            }
+        assert once >= 4, f"一次判定只写了 {once} 行，规则没发全，后面的幂等断言就没意义了"
+        assert len(rules_once) == once, f"一次判定里就有重复规则：{rules_once}"
+
+        for _ in range(2):
+            platform_cli.main(["gate", "--run-id", RUN_ID])
+            capsys.readouterr()
+
+        with store.tx() as conn:
+            three = conn.execute("SELECT COUNT(*) c FROM gate_results WHERE run_id=?", (RUN_ID,)).fetchone()["c"]
+            rules_three = {
+                r["rule_id"]
+                for r in conn.execute("SELECT rule_id FROM gate_results WHERE run_id=?", (RUN_ID,)).fetchall()
+            }
+        assert three == once, (
+            f"重判 3 次后 gate_results 变成 {three} 行（一次是 {once} 行）——"
+            "add_gate_results 只 INSERT 不替换，看板会把同一规则重复展示"
+        )
+        assert rules_three == rules_once, "重判后规则集合变了，说明替换时丢行或混进了历史规则"
+
+    def test_probe_run_finds_its_baseline_not_perf(self, capsys):
+        """`gate` 必须按 run **自己的 kind** 取基线。
+
+        ## 这条钉住的是一个"永远不会变红"的缺陷
+
+        基线表主键是 `(kind, label)`。`cmd_gate` 原先写死
+        `store.get_baseline("perf", label)`：
+
+        * 对 `perf` 轮 —— 碰巧对；
+        * 对 `probe` 轮 —— 恒取不到，于是 R3 恒打 `[SKIP] 未设置基线`。
+
+        危害在于它**不会报错**：R3 是 `skipped=True` + `severity=warning`，
+        不进 `blocked`，退出码照样 0。所以这个缺陷可以一直住着，
+        而「慢慢变慢」这条核心判据在 probe 轮上从来没生效过。
+
+        同一个事实，看板早就改对了（`dashboard/app.py` 按 run 的 kind 取，
+        有回归用例 `test_baseline_lookup_follows_the_actual_run_kind`），
+        只有 CLI 这一侧漏了 —— 于是同一份库，看板说"有基线"，
+        `gate --run-id` 说"未设置基线"。两条路径给出相反的结论。
+
+        ## 断言什么
+
+        造一轮 `kind="probe"` 的 run，把基线挂在 `probe` 下，
+        然后 `gate --run-id`。断言输出里**不再出现** SKIP 那句话，
+        而是真的做了对比。
+
+        ## 基线必须带 config 快照，否则会以另一种方式 SKIP
+
+        R3 有两条 `[SKIP]` 出路，它们的**取证方向完全不同**：
+
+        * 「未设置基线」→ 基线没取到（本用例要打的就是这条，kind 写死导致）；
+        * 「基线没有留下配置快照，无法判定可比性」→ 基线取到了，但没法比。
+
+        第二条是设计意图（拿两轮不同配置比出的劣化百分比没有意义），
+        不是缺陷。所以本用例必须把 `config` 一起写进基线，
+        否则会卡在第二条上，而看起来像第一条没修好 —— 那样这条用例
+        就成了"永远在验证另一件事"的假绿的近亲。
+        """
+        _seed_run(run_id="probe-run-1", kind="probe")
+        # 故意只挂在 probe 下：如果 gate 还写死 "perf"，这里必然取不到。
+        store.set_baseline(
+            "probe",
+            LABEL,
+            "probe-run-1",
+            {"p95_ms": 100.0, "rps": 50.0, "error_rate": 0.0},
+            # 与被门禁那轮**同配置**，才谈得上"可比"。`_seed_run` 写的是
+            # items=1000 / report_mode=agg，这里保持一致。
+            config={"items": 1000, "report_mode": "agg"},
+        )
+
+        platform_cli.main(["gate", "--run-id", "probe-run-1"])
+        out = capsys.readouterr().out
+
+        assert "未设置基线" not in out, (
+            "probe 轮明明有基线（挂在 kind='probe' 下），gate 却报「未设置基线」——\n"
+            "说明它还在按 perf 取。这条判据会一直静默跳过，而门禁照样绿。"
+        )
+        assert "无法判定可比性" not in out, (
+            "基线带了 config 快照却仍被判不可比 —— 说明取到的不是这条基线，\n或可比性校验读错了字段。"
+        )
+        # 真判时的两种可辨识结局之一必须出现。
+        assert ("全部指标在容忍带内" in out) or ("相对基线劣化" in out), out
+
 
 class TestFlakyCommand:
     """`flaky` 的三种结局：没有、有但在预算内、超预算。"""
@@ -241,6 +355,94 @@ class TestBaselineCommand:
         assert platform_cli.main(["baseline", "clear", "--label", LABEL]) == 0
         capsys.readouterr()
         assert store.get_baseline("perf", LABEL) is None
+
+    def test_clear_on_a_brand_new_database_does_not_crash(self, capsys):
+        """全新库上 `clear` 必须是「没什么可清」，不是「表不存在」。
+
+        ## 修复前的真实报错
+
+        ```
+        $ QUALITY_DB=<一个还不存在的路径> python platform_cli.py baseline clear --label x
+        sqlite3.OperationalError: no such table: baselines      (platform_cli.py:755)
+        exit=1
+        ```
+
+        根因：`clear` 是唯一一个**自己开事务**的 action（`from metrics.store
+        import tx`），其余四个 action 都走 `store.*` 函数，而那些函数内部会
+        `init_db()`。于是同一个空库上 `show` 优雅返回 0、`clear` 崩成 1。
+
+        ## 为什么要为它单独立一条用例
+
+        `test_clear_removes_it` 是先 `_seed_run()` 再 clear 的 —— 那时表早就
+        建好了，`init_db()` 缺失这件事**完全测不到**。**一个「删东西」的用例
+        天然会先把东西造出来**，而缺陷恰恰只在"没有东西可删"时出现。
+        这类用例的盲区不是不够仔细，是它的构造方式必然绕开缺陷。
+        """
+        # 注意：这里**刻意不调** store.init_db() / _seed_run()。
+        # autouse fixture `isolated_quality_db` 把 QUALITY_DB 指到一个
+        # 还不存在的临时文件，于是"全新库"这个前提是天然的。
+        code = platform_cli.main(["baseline", "clear", "--label", "nobody"])
+        out = capsys.readouterr()
+        assert code == 0, f"全新库上 clear 非零退出（{code}）：{out.err}"
+        assert "已清除" in out.out
+
+    def test_probe_baseline_roundtrip_with_kind_flag(self, capsys):
+        """`--kind probe` 必须能把 probe 轮的基线**存进去并取回来**。
+
+        ## 这是 P-20 修复的另一半
+
+        `gate` 那一侧已改成按 run 自己的 kind 取基线。但如果 `baseline`
+        五个 action 全写死 `kind='perf'`，那个修复就是落不了地的：probe 轮的
+        基线**没有任何 CLI 入口能设**，于是 `gate --run-id <probe 轮>` 依然恒
+        `[SKIP] 未设置基线` —— 症状一模一样，只是根因从"取错"变成"存不进"。
+
+        只修一半比不修更坏：`gate` 的注释会写"按 kind 取"，读的人以为
+        probe 轮已经能判了，而实际上没人能给它设基线。
+
+        ## 断言什么
+
+        1. `set --kind probe` 落库后，**probe 下查得到**、**perf 下查不到**
+           —— 后者是关键：如果实现里仍然写死 perf，前半条会失败；
+           如果实现里把 kind 丢掉（比如总是写两份），后半条会失败。
+        2. 紧接着 `gate --run-id`，R3 不再是 SKIP，而是真的判定。
+        """
+        _seed_run(run_id="probe-k", kind="probe")
+        capsys.readouterr()
+
+        assert platform_cli.main(["baseline", "set", "--label", LABEL, "--kind", "probe"]) == 0
+        capsys.readouterr()
+
+        assert store.get_baseline("probe", LABEL) is not None, "--kind probe 没有把基线存到 probe 下"
+        assert store.get_baseline("perf", LABEL) is None, "设 probe 基线时顺手在 perf 下也写了一份"
+
+        platform_cli.main(["gate", "--run-id", "probe-k"])
+        out = capsys.readouterr().out
+        assert "未设置基线" not in out, "基线确实存在，gate 却说没有 —— 取基线的那一侧没修完整"
+        r3_line = next(ln for ln in out.splitlines() if "R3" in ln)
+        assert "SKIP" not in r3_line, f"R3 仍然是 SKIP：{r3_line}"
+
+    def test_show_and_clear_respect_kind(self, capsys):
+        """`show` / `clear` 也要认 `--kind`，不能只看 perf 那一行。
+
+        同一个 label 在 perf 与 probe 下可以是**两条不同的基线**（各有各的
+        run_id）。`show --kind probe` 如果仍读 perf 那份，会显示一条根本
+        不属于 probe 的基线 —— 而 `clear --kind probe` 会删错东西，
+        或者什么都不删却打印「已清除」。
+        """
+        _seed_run(run_id="perf-row", kind="perf")
+        _seed_run(run_id="probe-row", kind="probe", p95=50.0)
+        platform_cli.main(["baseline", "set", "--label", LABEL])
+        platform_cli.main(["baseline", "set", "--label", LABEL, "--kind", "probe"])
+        capsys.readouterr()
+
+        assert platform_cli.main(["baseline", "show", "--label", LABEL, "--kind", "probe"]) == 0
+        out = capsys.readouterr().out
+        assert "probe-row" in out, f"show --kind probe 显示的不是 probe 那条基线：{out}"
+
+        assert platform_cli.main(["baseline", "clear", "--label", LABEL, "--kind", "probe"]) == 0
+        capsys.readouterr()
+        assert store.get_baseline("probe", LABEL) is None, "clear --kind probe 没删掉 probe 那条"
+        assert store.get_baseline("perf", LABEL) is not None, "clear --kind probe 把 perf 那条也删了"
 
 
 class TestEnvCommand:

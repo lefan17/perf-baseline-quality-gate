@@ -56,7 +56,34 @@ def test_config_listens_on_the_requested_ports():
     conf = proxy_probe.render_config(sut_port=7000, keepalive_port=18111, plain_port=18222)
     assert "listen 127.0.0.1:18111;" in conf
     assert "listen 127.0.0.1:18222;" in conf
-    assert "7000" not in conf.split("listen")[0] or True  # 端口只出现在 proxy_pass 与 listen
+
+
+def test_backend_port_appears_only_in_proxy_pass():
+    """后端端口不许出现在 `proxy_pass` 以外的指令里。
+
+    ## 这条原先是个恒真断言
+
+    原写法：
+
+        assert "7000" not in conf.split("listen")[0] or True  # 端口只出现在 …
+
+    `or True` 让整个表达式**恒真**，注释里那句「端口只出现在 proxy_pass 与
+    listen」是作者想验的性质，但代码一次都没验过。它读起来像一条覆盖了
+    这个性质的用例 —— 比不写更坏，因为没人会再补一条。
+
+    ## 真正要防的是什么
+
+    模板里 `sut_port` 只该出现在两处 `proxy_pass`。如果哪天有人手滑把它写进
+    `listen`（比如复制粘贴时把 `{keepalive_port}` 换成 `{sut_port}`），
+    两个 server 会听同一个端口 —— nginx 起不来，而**纯函数用例本来发现不了**
+    nginx 起不来这件事（`test_proxy_probe.py` 故意不装 nginx 也能跑）。
+    所以这条断言要的正是那个能提前发现的信号。
+    """
+    conf = proxy_probe.render_config(sut_port=7000, keepalive_port=18111, plain_port=18222)
+    hits = [ln.strip() for ln in conf.splitlines() if "7000" in ln]
+    assert len(hits) == 2, f"后端端口应只出现在两处 proxy_pass，实测 {len(hits)} 处：{hits}"
+    for line in hits:
+        assert line.startswith("proxy_pass "), f"后端端口出现在 proxy_pass 以外的指令里：{line}"
 
 
 def test_config_keeps_temp_paths_inside_the_prefix():

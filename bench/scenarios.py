@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import random
+import threading
 
 import requests
 
@@ -56,9 +58,52 @@ def item_id_max() -> int:
     return _ITEM_ID_MAX
 
 
+#: 场景内部随机源的基准种子。与 `Runner` 的 `seed=42` 同源，便于对照。
+_BASE_SEED = 42
+#: 每个线程首次调用 `_rnd()` 时领到的编号。用它把种子拆开，
+#: 避免所有线程抽到同一串数（那样并发压出来的"分布"只有一份）。
+_threads = threading.local()
+_thread_seq = itertools.count()
+
+
 def _rnd() -> random.Random:
-    # 每个线程各自持有一个 Random，避免共享实例被 GIL 打断成串行。
-    return random.Random()
+    """取**本线程**的随机源。
+
+    ## 这里修的是什么
+
+    原先写成 `return random.Random()` —— 每次调用新建一个、且不带种子。
+    而它上面那行注释写的是「每个线程各自持有一个 Random，避免共享实例被
+    GIL 打断成串行」。**注释描述的性质一条都不成立**：
+
+    * 不是"每个线程持有"，是"每次调用新建"；
+    * 不带种子，所以每次试验的场景参数序列都不一样 —— 而
+      `bench/engine.py` 的 `Runner` 专门论证过「每个 worker 一个
+      `Random(seed + worker_id)`」才叫可复现，同一份代码里两套随机性口径。
+
+    后果不是"数字错"，而是"数字不可复核"：同一台机器、同一份代码连跑两轮，
+    `items_list` 抽到的 `limit`/`offset` 组合不同，`item_detail` 打到的
+    ID 也不同 —— 于是两轮 P95 的差里混进了一个**没被记录的自变量**。
+    这个仓把"变了没有"当作核心卖点，自变量不受控就直接折损了这个卖点。
+
+    ## 现在能做到什么、做不到什么（如实写）
+
+    做得到：同一线程内的序列由 `(_BASE_SEED, 线程序号)` 完全决定，
+    不再每次新建；线程之间不共享实例，也就没有 GIL 下的串行点。
+
+    做不到：**跨轮次的精确序列仍然不可复现**，因为线程序号取决于
+    `ThreadPoolExecutor` 什么时候真正启动第 N 个线程，而那不是确定性的。
+    真正要"连场景参数都逐次可复现"，得把 Random 从引擎一路传进场景函数
+    （改 `(session) -> Sample` 这个全部场景共用的签名）。那是一次更大的
+    改动，本阶段不做 —— 所以这里不宣称做到了。
+
+    场景**选择**序列（哪个场景被调用）是可复现的，那由引擎的 picker 决定，
+    与本函数无关。两条序列不要混为一谈。
+    """
+    rnd = getattr(_threads, "rnd", None)
+    if rnd is None:
+        rnd = random.Random(_BASE_SEED + next(_thread_seq))
+        _threads.rnd = rnd
+    return rnd
 
 
 def _random_item_id(r: random.Random) -> int:

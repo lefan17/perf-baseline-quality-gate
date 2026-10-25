@@ -61,13 +61,30 @@ class TestParserWiring:
         assert not broken, f"这些子命令没有绑定可调用的 func：{broken}"
 
     def test_expected_subcommands_exist(self):
-        """子命令集合是稳定的契约 —— CI 脚本按名字调用它们。"""
+        """子命令集合是稳定的契约 —— CI 脚本按名字调用它们。
+
+        这里早先只列了 10 个，漏掉 `report` 与 `env`：契约测试只覆盖
+        "我想到的那些"，于是新增子命令时它照样绿，等于没保护到新东西。
+        现在改成**全集精确比对**（`==` 而不是 `<=`）：多一个少一个都要显式改这里。
+        """
         parser = platform_cli.build_parser()
         action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         names = set(action.choices)
-        expected = {"run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "prune", "serve"}
-        missing = expected - names
-        assert not missing, f"缺少子命令：{missing}"
+        expected = {
+            "run",
+            "probe",
+            "baseline",
+            "trend",
+            "gate",
+            "suite",
+            "flaky",
+            "noise",
+            "prune",
+            "serve",
+            "report",
+            "env",
+        }
+        assert names == expected, f"子命令集合变了：多出 {sorted(names - expected)}，缺少 {sorted(expected - names)}"
 
     def test_baseline_actions_are_a_stable_contract(self):
         """`baseline` 的 action 集合也是契约 —— CI 按名字调 `baseline import`。
@@ -86,7 +103,20 @@ class TestParserWiring:
 
     @pytest.mark.parametrize(
         "name",
-        ["run", "probe", "baseline", "trend", "gate", "suite", "flaky", "noise", "prune", "serve"],
+        [
+            "run",
+            "probe",
+            "baseline",
+            "trend",
+            "gate",
+            "suite",
+            "flaky",
+            "noise",
+            "prune",
+            "serve",
+            "report",
+            "env",
+        ],
     )
     def test_help_renders_for_each_subcommand(self, name, capsys):
         """每个子命令的 --help 都要能正常渲染。
@@ -99,6 +129,59 @@ class TestParserWiring:
             parser.parse_args([name, "--help"])
         assert exc.value.code == 0
         assert name in capsys.readouterr().out
+
+    def test_rules_flag_works_on_either_side_of_the_subcommand(self, tmp_path):
+        """`--rules` 写在子命令**前后**都必须被解析到。
+
+        ## 修复前的样子
+
+        `--rules` 只挂在顶层 parser 上，于是：
+
+        ```
+        platform_cli.py --rules gate_rules.yaml trend --label x   ✅
+        platform_cli.py trend --label x --rules gate_rules.yaml   ❌
+            error: unrecognized arguments: --rules gate_rules.yaml （exit 2）
+        ```
+
+        习惯上人都是先写子命令、再写参数，而且各子命令的 `--help` 里
+        根本看不到 `--rules`。所以这条路径的表现是"参数不认识" ——
+        报错在说"你打错了"，而真实原因是"这个参数不允许写在这个位置"。
+
+        ## 为什么必须同时钉住"顶层那一种写法没被弄坏"
+
+        给子 parser 也挂 `--rules` 时，若照抄 `default=str(DEFAULT_RULES)`，
+        argparse 会让**子 parser 的默认值覆盖父级已解析的结果**：顶层写
+        `--rules X` 会被静默盖回仓库那份默认路径。参数还在、还能解析、
+        一点错都不报，只是**不再生效** —— 这比原来的 bug 更坏，
+        因为它把"报错"换成了"算出来的结论用的是另一份阈值"。
+        所以三个方向都断言：前置生效、后置生效、都没写时走默认。
+        """
+        rules = tmp_path / "custom.yaml"
+        rules.write_text("perf:\n  tolerance:\n    degradation_pct: 0.05\n", encoding="utf-8")
+        parser = platform_cli.build_parser()
+
+        before = parser.parse_args(["--rules", str(rules), "trend", "--label", "x"])
+        assert before.rules == str(rules), "顶层 --rules 被子 parser 的默认值覆盖了 —— 参数变成摆设"
+
+        after = parser.parse_args(["trend", "--label", "x", "--rules", str(rules)])
+        assert after.rules == str(rules), "子命令后面的 --rules 没被解析到"
+
+        neither = parser.parse_args(["trend", "--label", "x"])
+        assert neither.rules == str(platform_cli.DEFAULT_RULES), "没写 --rules 时必须回落到仓库那份"
+
+    @pytest.mark.parametrize("name", ["run", "trend", "gate", "suite", "probe"])
+    def test_rules_flag_is_visible_in_subcommand_help(self, name, capsys):
+        """`--rules` 要出现在子命令的 `--help` 里，否则没人知道它能写在这。
+
+        只挂在顶层时，`platform_cli.py trend --help` 的输出里没有任何一处
+        提到规则文件 —— 想知道"能不能换一份阈值"只能去读源码。参数必须
+        在它**能用的每一个位置**都可被发现。
+        """
+        parser = platform_cli.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([name, "--help"])
+        out = capsys.readouterr().out
+        assert "--rules" in out, f"`{name} --help` 里看不到 --rules，用户不会知道它能写在这里"
 
 
 class TestHelpers:

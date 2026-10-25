@@ -41,6 +41,7 @@ from typing import Any
 
 import pymysql
 
+from sut.envconf import env_int
 from sut.pool import ConnectionPool, PoolExhaustedError
 
 
@@ -351,6 +352,9 @@ def build_store() -> MySQLStore | None:
     config = _config()
     if config is None:
         return None
-    size = int(os.environ.get("PERF_MYSQL_POOL_SIZE", str(DEFAULT_POOL_SIZE)))
-    seed_rows = int(os.environ.get("PERF_MYSQL_ROWS", "1000"))
-    return MySQLStore(config, pool_size=max(1, size), seed_rows=max(1, seed_rows))
+    # 这两个值按上面 docstring 的承诺必须容错：`PERF_MYSQL_POOL_SIZE=abc`
+    # 原本在这里 ValueError，而 `build_store()` 是在 `sut/app.py` 的**导入期**
+    # 被调用的 —— 于是一个填错的池大小会让整个被测服务起不来。
+    size = env_int("PERF_MYSQL_POOL_SIZE", DEFAULT_POOL_SIZE, minimum=1)
+    seed_rows = env_int("PERF_MYSQL_ROWS", 1000, minimum=1)
+    return MySQLStore(config, pool_size=size, seed_rows=seed_rows)

@@ -138,7 +138,13 @@ def test_repeated_reads_hit_the_cache(cached_sut):
     first = requests.get(f"{base}/api/items/{item_id}/detail?cache=on", timeout=10).json()
     second = requests.get(f"{base}/api/items/{item_id}/detail?cache=on", timeout=10).json()
 
-    assert first["cache"]["hit"] in (False, True)
+    # 第一次读是命中还是未命中**取决于模块级 SUT 之前被哪些用例读过**
+    # （`cached_sut` 是 module scope），所以不锁定具体值。但也不能写成
+    # `assert first["cache"]["hit"] in (False, True)` —— 那个表达式恒真
+    # （只要是 bool 就过），等于什么都没验，连"这个字段在不在"都验不到。
+    # 要验的是它**确实是一个布尔值**：字段缺失会 KeyError；被序列化成
+    # 字符串（`"false"`）会被这里抓住 —— 后者正是接口改动最常引入的坑。
+    assert isinstance(first["cache"]["hit"], bool), f"cache.hit 不是布尔值：{first['cache']['hit']!r}"
     assert second["cache"]["hit"] is True, "第二次读没命中，缓存其实没生效"
 
     stats = requests.get(f"{base}/api/_diagnostics/cache", timeout=10).json()

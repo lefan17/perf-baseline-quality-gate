@@ -245,6 +245,49 @@ class TestApiGate:
         if p95_deltas:
             assert p95_deltas[0]["degraded"] is True
 
+    def test_gate_lookup_follows_the_actual_run_kind(self):
+        """`api_gate` 必须按 run **自己的 kind** 取基线，不能写死 `perf`。
+
+        ## 这条钉住的是"同一个文件里两套口径"
+
+        `api_trend`（本文件上方）早就按 `points[-1]["kind"]` 取基线，并且有
+        用例 `test_baseline_lookup_follows_the_actual_run_kind` 守着。
+        但 `api_gate` 当时写的是 `store.get_baseline("perf", label)` ——
+        基线表主键是 `(kind, label)`，于是 `kind='probe'` 的轮次在这里
+        恒取不到基线，R3 恒 `[SKIP] 未设置基线`。
+
+        危害是**静默**的：`skipped=True` 不进 `blocked`，`blocked` 照样 False。
+        更坏的是同一份库、两个 API 给出相反结论 —— 趋势图上有基线，
+        点进门禁详情说没有。这和 CLI 侧那个 P-20 是同一个病，只是住得更高一层。
+
+        ## 断言什么
+
+        baseline **只**挂在 `probe` 下（挂两份就测不出问题），
+        然后调 `api_gate`。修复前 `baseline` 是 None、`deltas` 为空、
+        R3 的 message 里带"未设置基线"。
+        """
+        store.init_db()
+        _seed_perf_run(run_id="probe-g", kind="probe")
+        store.set_baseline(
+            "probe",
+            LABEL,
+            "probe-g",
+            {"p95_ms": 100.0, "rps": 500.0, "error_rate": 0.0},
+            # 与被判定那轮同配置，才谈得上"可比"；否则会以另一条完全正当的
+            # 理由 SKIP（"无法判定可比性"），那样这条用例就在验证别的事了。
+            config={"items": 1000, "report_mode": "agg"},
+        )
+
+        payload = dash.api_gate("probe-g")
+
+        r3 = next(r for r in payload["results"] if r["rule_id"] == "R3-baseline-degradation")
+        assert "未设置基线" not in r3["message"], (
+            "probe 轮明明有基线（挂在 kind='probe' 下），api_gate 却说没有 ——\n"
+            "说明它还在按 perf 取。这条判据会一直静默跳过，而 blocked 照样 False。"
+        )
+        assert r3["skipped"] is False, "基线取到了就不该是 SKIP：SKIP 和 PASS 必须能分辨"
+        assert payload["deltas"], "有基线却没有 deltas，说明比较根本没做"
+
 
 class TestApiFlaky:
     def test_no_cases_returns_empty(self):

@@ -28,11 +28,8 @@ def isolated_quality_db(tmp_path, monkeypatch):
     monkeypatch.setenv("QUALITY_DB", str(tmp_path / "quality.db"))
 
 
-@pytest.fixture
-def sut_items() -> int:
-    """压测类用例用小数据量：目的是验证链路，不是测性能上限。
-
-    真实验收数字由 `platform_cli run --items 20000` 单独跑并写进 docs/，
-    不放在单测里 —— 单测要求"稳定复现"，性能数字天然不满足这个前提。
-    """
-    return 800
+# 这里原先还有一个 `sut_items` fixture（返回 800，本意是"压测类用例用小数据量"）。
+# 全仓 grep 只有它自己的定义那一行 —— **一个从未被任何用例引用的 fixture**。
+# 已删除。它不像普通死代码那样无害：它读起来像是在说"仓库里的压测用例
+# 统一用 800 条数据"，而实际上各用例各自决定数据量，没有一个跟着它走。
+# 想改数据量的人会先改这里，然后发现毫无作用。

@@ -170,6 +170,19 @@ def is_excluded(rel_path: str, excludes: list[str]) -> bool:
     return False
 
 
+def _coverage_mode_label(data: dict) -> str:
+    """从产物里读出这份覆盖率到底算的是**语句**还是**分支**。
+
+    不写死成某个词，是因为「口径」这件事必须由产物证明，不能由作者印象决定。
+    `meta.branch_coverage` 是 coverage.py 自己写的标志，也是唯一可信的来源。
+    """
+    meta = data.get("meta") or {}
+    # 三种情况都要能分辨：明确开了分支 / 明确没开 / 老版本产物没这个键
+    if meta.get("branch_coverage") is True:
+        return "分支"
+    return "语句"
+
+
 def load_report(report: Path) -> dict:
     if not report.is_file():
         raise ConfigError(
@@ -283,8 +296,15 @@ def main(argv: list[str] | None = None) -> int:
     failures, considered = collect(data, fail_under, min_statements, excludes)
 
     print(
-        f"[coverage-perfile] 门槛 {fail_under:g}%（分支口径）· 参与 {considered} 个文件"
-        f"（语句数 ≥ {min_statements}）· 排除 {len(excludes)} 项"
+        # 这行原先硬写「（分支口径）」。它是错的：全仓没有 `--cov-branch`，
+        # `pyproject.toml` 的 `[tool.coverage.run]` 里也没有 `branch = true`，
+        # 产物 JSON 的 `meta.branch_coverage` 实测是 `false`。
+        # 于是这道门禁从上线起一直按**语句覆盖率**在算，却在日志里宣称自己算分支。
+        # 危害具体而不抽象：「分支覆盖率通常比语句低 10~20 个点」是这个领域最常被
+        # 引用的一句话，读日志的人会照「分支 60%」理解这个仓的测试强度 → 高估它。
+        # 现在改成从产物里读真实标志，而不是按作者当时的印象写死。
+        f"[coverage-perfile] 门槛 {fail_under:g}%（{_coverage_mode_label(data)}口径）"
+        f"· 参与 {considered} 个文件（语句数 ≥ {min_statements}）· 排除 {len(excludes)} 项"
     )
 
     if not failures:

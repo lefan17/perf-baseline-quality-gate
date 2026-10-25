@@ -135,7 +135,16 @@ def api_gate(run_id: str, rules: str | None = None) -> dict:
         row = conn.execute("SELECT kind, label, config_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
     label = row["label"] if row else ""
     run_config = json.loads(row["config_json"] or "{}") if row else {}
-    baseline = store.get_baseline("perf", label) if row and row["kind"] in ("perf", "probe") else None
+    # 按 run **自己的 kind** 取基线，不写死 "perf"。
+    #
+    # 这里原先写的是 `store.get_baseline("perf", label)`，而 `baselines` 的主键是
+    # `(kind, label)`。于是 `kind='probe'` 的轮次在本 API 里恒取不到基线 →
+    # R3 恒 `[SKIP] 未设置基线`；而**同一个文件**的 `api_trend`（上一百行处）
+    # 早就按 `points[-1]["kind"]` 取了 —— 同一份库、两个 API 对同一行数据
+    # 得出相反结论。CLI 那一侧同款毛病已修（`platform_cli._label_and_kind_of`），
+    # 这里之前漏了。
+    baseline_kind = row["kind"] if row else "perf"
+    baseline = store.get_baseline(baseline_kind, label) if row and row["kind"] in ("perf", "probe") else None
     # rules 只加载一次，并**同时**喂给容忍带与门禁。
     #
     # 这里曾经是 `compare_to_baseline(merged, baseline["metrics"])`（不传 rules）

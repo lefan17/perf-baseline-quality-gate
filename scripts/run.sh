@@ -38,32 +38,40 @@ assert_venv() {
   fi
 }
 
-# 打印将要执行的命令。help 与实际执行共用这一份定义，
-# 所以 help 的输出不可能与真实命令漂移。
+# 打印「这个任务等价于哪条命令」。
+#
+# 诚实边界：这**不是**实际执行的那份定义（执行在下面的 `case` 里），
+# 所以这里说「共用一份定义，不可能漂移」是假的 —— 原先的注释就是这么写的。
+# 真话是：两处必须人工保持一致，而 `./scripts/run.sh help` 打出来的文本
+# 是给人抄的，抄错了会在 CI 之外得到一份和 CI 不一样的结果。
+# 为什么不做成"一份定义两处用"：bash 里要把「命令 + 参数」当数据存放，
+# 既要不经 eval（引号地狱）、又要能原样显示，代价远大于这两份几十行的清单。
+# 这里改成如实描述，并让 shown 的路径用 POSIX 风格（原先写的是
+# `& ".venv/bin/python"`，那是 PowerShell 的调用符，复制到 bash 里直接语法错）。
 show_commands() {
   cat <<EOF
 --- setup ---
   python -m venv .venv
-  & ".venv/bin/python" -m pip install --upgrade pip
-  & ".venv/bin/python" -m pip install -r requirements.txt -r requirements-dev.txt
+  .venv/bin/python -m pip install --upgrade pip
+  .venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 --- env ---
-  & ".venv/bin/python" platform_cli.py env
+  .venv/bin/python platform_cli.py env
 --- test ---
-  & ".venv/bin/python" -m pytest tests/ -q
+  .venv/bin/python -m pytest tests/ -q
 --- cov ---
-  & ".venv/bin/python" -m pytest tests/ -q --cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli --cov-report=term-missing --cov-fail-under=40
+  .venv/bin/python -m pytest tests/ -q --cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli --cov-report=term-missing --cov-fail-under=40
 --- lint ---
-  & ".venv/bin/python" -m ruff check .
-  & ".venv/bin/python" -m mypy
-  & ".venv/bin/python" scripts/check_deps_sync.py
+  .venv/bin/python -m ruff check .
+  .venv/bin/python -m mypy
+  .venv/bin/python scripts/check_deps_sync.py
 --- lock ---
-  PIP_TOOLS_CACHE_DIR=.pip-tools-cache & ".venv/bin/python" -m piptools compile requirements.txt --output-file requirements.lock --strip-extras
+  PIP_TOOLS_CACHE_DIR=.pip-tools-cache .venv/bin/python -m piptools compile requirements.txt --output-file requirements.lock --strip-extras
 --- perf ---
-  & ".venv/bin/python" platform_cli.py run --label local-perf --items $ITEMS --step-users $USERS --step-duration $DURATION
+  .venv/bin/python platform_cli.py run --label local-perf --items $ITEMS --step-users $USERS --step-duration $DURATION
 --- probe ---
-  & ".venv/bin/python" platform_cli.py probe --label local-n1-probe --items $ITEMS --users 4 --duration $DURATION
+  .venv/bin/python platform_cli.py probe --label local-n1-probe --items $ITEMS --users 4 --duration $DURATION
 --- dash ---
-  & ".venv/bin/python" platform_cli.py serve --port 8765
+  .venv/bin/python platform_cli.py serve --port 8765
 EOF
 }
 
@@ -93,7 +101,17 @@ if [ "$TASK" = "all" ]; then
   for t in setup lint test; do
     echo
     echo "==> 任务：$t"
-    "$0" "$t" || { echo "任务 $t 失败，停止后续任务。" >&2; exit $?; }
+    # 这里必须先把退出码存下来再打印。
+    # 原先是 `"$0" "$t" || { echo …; exit $?; }` —— `$?` 在那个位置读到的是
+    # **echo 的 0**，于是 `all` 永远以 0 退出：lint 红了、test 红了，
+    # 脚本照样报"全部通过"。这正是本仓最反对的那种假绿
+    # （README 里那条「加了管道却忘了 pipefail」是同一个病）。
+    "$0" "$t"
+    code=$?
+    if [ "$code" -ne 0 ]; then
+      echo "任务 $t 失败（退出码 $code），停止后续任务。" >&2
+      exit "$code"
+    fi
   done
   echo
   echo "全部通过。"
@@ -103,7 +121,29 @@ fi
 assert_venv
 echo
 echo "==> 任务：$TASK"
-show_commands | sed -n "/^--- $TASK ---\$/,/^---/p" | sed '1d;$d' | sed 's/^/  /' || true
+# 打印这个任务对应的命令（见 show_commands 上方的诚实边界说明）。
+#
+# 为什么不用 `sed -n "/^--- $TASK ---\$/,/^---/p" | sed '1d;$d'`：
+# 末段（`--- dash ---`）后面没有下一个 `---`，`/^---/` 会一路吃到文件结束，
+# 随后的 `$d` 就把**唯一那一条命令**当尾行删掉 —— 实测表现是
+# `./scripts/run.sh dash` 只打印任务名、不打印任何命令，而且不报错。
+# 用纯 bash 的"看到分隔符就停"来写，边界只有一种，不需要论证 sed 的范围语义。
+printing=0
+while IFS= read -r line; do
+  case "$line" in
+  "--- $TASK ---") printing=1 ;;
+  "--- "*)
+    # 进入另一段就停。第一段的标题本身也会命中这个分支，
+    # 所以上面那一条必须排在前面。
+    [ "$printing" -eq 1 ] && break
+    ;;
+  *)
+    [ "$printing" -eq 1 ] && printf '  %s\n' "$line"
+    ;;
+  esac
+done <<EOF
+$(show_commands)
+EOF
 
 # 先关掉 errexit 再跑任务：本脚本要**读出**退出码并按 probe 的特殊语义解释它，
 # 而 `set -e` 会在命令失败的那一刻直接退出，后面的 `code=$?` 变成死代码 ——

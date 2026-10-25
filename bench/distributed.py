@@ -228,6 +228,9 @@ def _run_on_worker(payload: dict) -> dict:
             if delay > 0:
                 time.sleep(delay)
 
+        # 注意 `timeout_s` 只喂给 `build_engine_mix`：超时在**构造场景**时
+        # 就烘进了闭包，那才是它唯一生效的地方。`Runner` 没有这个参数
+        # （它曾经有，但存下来后从没读过，见 `bench/engine.py` 的类说明）。
         mix = scenario_mod.build_engine_mix(base_url, names, timeout_s=timeout_s)
         runner = Runner(
             base_url=base_url,
@@ -236,7 +239,6 @@ def _run_on_worker(payload: dict) -> dict:
             duration_s=duration_s,
             think_time_s=think_time_s,
             ramp_up_s=ramp_up_s,
-            timeout_s=timeout_s,
             warmup_drop_s=warmup_drop_s,
         )
         started = time.time()

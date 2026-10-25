@@ -11,14 +11,19 @@
 `message` 是**给人看的行动指引**（"把 N+1 改成聚合查询"，而不是"p95 超标"），
 `severity` 决定它拦不拦流水线。
 
-## severity 的三档
+## severity 的分档
 
 * `blocking` —— 拦住合并（P95 相对基线劣化、错误率超限、N+1 探针复活）；
-* `warning`  —— 只报告不拦（P99 抖动、样本量不足）；
-* `info`     —— 记录事实（本轮容量落在哪一级）。
+* `warning`  —— 只报告不拦（P99 抖动、样本量不足）。
 
 分档的意义是让 blocking 只保留**真的能让生产出事故**的那几条。
 全部门禁都是 blocking，等于没有门禁。
+
+> 这里曾经写了第三档 `info`（"记录事实：本轮容量落在哪一级"）并导出了
+> `INFO` 常量。**12 条规则里没有任何一条用它**，全仓也搜不到
+> `severity=INFO` 的调用点 —— 文档描述了一个不存在的能力。已删掉这一档，
+> 而不是补一条规则去用它：`RuleResult` 只有"拦/不拦/没判定（skipped）"
+> 三种处置，多一个不影响行为的档位只会让读代码的人以为存在"仅记录"的规则。
 """
 
 from __future__ import annotations
@@ -29,7 +34,6 @@ import yaml
 
 BLOCKING = "blocking"
 WARNING = "warning"
-INFO = "info"
 
 
 @dataclass

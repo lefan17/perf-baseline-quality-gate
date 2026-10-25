@@ -79,12 +79,16 @@ def _run_single(
     warmup_drop_s: float,
 ):
     mix = scenario_mod.build_engine_mix(base_url, names, timeout_s=timeout_s)
+    # 超时**只**在这里生效：`build_engine_mix(..., timeout_s=)` 把它烘进了
+    # 场景闭包。`Runner` 刻意没有 `timeout_s` 参数（见 bench/engine.py 里
+    # `Runner` 的 docstring）—— 它曾经有，且从未被读过，属于
+    # 「看起来能配、实际不归它管」的参数，已于本版删除。
+    # 这里曾经多写一行 `timeout_s=timeout_s`，被 mypy 的 call-arg 抓到。
     runner = Runner(
         base_url=base_url,
         scenarios=mix,
         users=users,
         duration_s=duration_s,
-        timeout_s=timeout_s,
         warmup_drop_s=warmup_drop_s,
     )
     return runner.run()

@@ -188,6 +188,7 @@ def upsert_run(
 
 
 def finish_run(run_id: str, status: str, metrics: dict | None = None) -> None:
+    init_db()
     with tx() as conn:
         conn.execute(
             "UPDATE runs SET status=?, finished_at=?,"
@@ -198,6 +199,7 @@ def finish_run(run_id: str, status: str, metrics: dict | None = None) -> None:
 
 
 def add_steps(run_id: str, stats_list: list) -> None:
+    init_db()
     with tx() as conn:
         for st in stats_list:
             d = st.as_dict() if hasattr(st, "as_dict") else dict(st)
@@ -234,6 +236,7 @@ def add_steps(run_id: str, stats_list: list) -> None:
 
 
 def add_cases(run_id: str, cases: list[dict]) -> None:
+    init_db()
     with tx() as conn:
         for c in cases:
             conn.execute(
@@ -291,8 +294,23 @@ def set_baseline(kind: str, label: str, run_id: str, metrics: dict, config: dict
 
 
 def add_gate_results(run_id: str, results: list[dict]) -> None:
+    """把一轮的门禁判定写进 `gate_results`。**同一 run 的旧结论先删掉。**
+
+    曾经这里只有 `INSERT`。后果不是抽象的：`cmd_gate` 的用途恰恰是
+    「改完阈值回头复判同一轮」，复判几次就叠几倍行。实测对同一个 run
+    连跑 3 次 `gate --run-id`，五条规则各 3 行，共 15 行；而
+    `dashboard.app._gate_for` 是 `ORDER BY id` 全取 → `/api/run` 返回
+    15 条结果而不是 5 条，页面上同一规则重复出现。
+
+    为什么选"先删后插"而不是"按 (run_id, rule_id) UPSERT"：
+    `gate_results` 没有 `(run_id, rule_id)` 唯一索引，且规则集会随代码
+    增删（比如 R3 某次不再发射），UPSERT 会把**上一版才有的规则**留成
+    幽灵行。整批替换的语义才和"这一轮的判定"对得上 —— 判定是一份完整
+    快照，不是增量追加。
+    """
     init_db()
     with tx() as conn:
+        conn.execute("DELETE FROM gate_results WHERE run_id=?", (run_id,))
         for r in results:
             conn.execute(
                 "INSERT INTO gate_results(run_id, rule_id, passed, severity, observed, expected, message, created_at)"

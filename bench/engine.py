@@ -200,6 +200,29 @@ class Runner:
     同样的场景选择序列」——那句话是假的：谁先拿到 GIL 谁先取随机数，
     线程调度变了序列就变了；顺带还让随机数生成在 GIL 下变成串行点之一，
     把压测端自己的争用混进了"服务变慢"的数字里。
+
+    ## 为什么这里没有 `timeout_s` 参数
+
+    因为它曾经有，而且**是个完全不起作用的参数**：`__init__` 把它存进
+    `self.timeout_s`，然后整个类里再没有任何一处读过它。真正生效的超时来自
+    场景闭包 —— `scenarios.bind(fn, base_url, timeout_s)` 和
+    `engine_single(..., timeout_s)` 在**构造场景时**就把超时烘进了闭包，
+    `_worker` 只是调 `fn(session)`，看不到 `Runner` 的任何超时设置。
+
+    于是每个调用点都把同一个超时值写了两遍：
+
+        scenarios=build_engine_mix(base_url, timeout_s=args.timeout),   # 这个生效
+        ...
+        timeout_s=args.timeout,                                        # 这个不生效
+
+    危害不是"超时没设上"（设上了），而是**读代码的人会以为它是被
+    `Runner` 统一管的**。哪天有人为了排查偶发超时，把 `Runner(..., timeout_s=1)`
+    调到 1 秒，然后发现「还是一条超时都没有」—— 接着开始怀疑引擎、
+    怀疑被测服务，而真正的原因是这个参数从来没接线。这类"看起来能配、
+    实际不归它管"的配置，比不存在的配置更容易浪费排查时间。
+
+    所以现在删掉它，让超时只有**一处来源**（场景闭包）。要改超时，
+    就改构造场景的那一处 —— 那里也恰好是唯一能让超时真正落地的地方。
     """
 
     def __init__(
@@ -210,7 +233,6 @@ class Runner:
         duration_s: float,
         think_time_s: float = 0.0,
         ramp_up_s: float = 0.0,
-        timeout_s: float = 10.0,
         warmup_drop_s: float = 0.0,
         seed: int = 42,
     ):
@@ -226,7 +248,6 @@ class Runner:
         self.duration_s = duration_s
         self.think_time_s = think_time_s
         self.ramp_up_s = ramp_up_s
-        self.timeout_s = timeout_s
         self.warmup_drop_s = warmup_drop_s
         self.seed = seed
 

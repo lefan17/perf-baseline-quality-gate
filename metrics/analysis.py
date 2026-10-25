@@ -351,7 +351,6 @@ def find_knee(steps: list[dict]) -> dict | None:
         "rps": step.get("rps"),
         "error_rate": step.get("error_rate"),
     }
-    return None
 
 
 def last_stable_step(steps: list[dict]) -> dict | None:

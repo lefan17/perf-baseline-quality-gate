@@ -33,6 +33,7 @@ from fastapi.responses import JSONResponse
 
 from sut.cache import ItemCache
 from sut.db import connect, get_pool, pool_size
+from sut.envconf import env_int
 from sut.mysql_store import (
     MYSQL_URL_ENV,
     InsufficientStockError,
@@ -47,7 +48,11 @@ from sut.redis_client import Redis
 app = FastAPI(title="Inventory Perf SUT", version="1.0.0")
 
 REPORT_MODE = "PERF_SUT_REPORT_MODE"
-N1_SUPPLIER_LIMIT = int(os.environ.get("PERF_SUT_N1_SUPPLIERS", "40"))
+# 用 `env_int` 而不是裸 `int(os.environ[...])`：这个值来自部署时的环境，
+# 填错一个字（`PERF_SUT_N1_SUPPLIERS=forty`）原本会让 `import sut.app`
+# 直接 ValueError，于是压测平台报「SUT 起不来」，而不是「你那个变量写错了」。
+# 这个模块的 docstring 讲的就是「配错不许让服务起不来」，见 `sut/envconf.py`。
+N1_SUPPLIER_LIMIT = env_int("PERF_SUT_N1_SUPPLIERS", 40, minimum=1)
 
 #: Redis 地址。留空 / 设为 `off` 时**不连**，所有缓存路径退化成直查数据库。
 REDIS_URL = "PERF_REDIS_URL"

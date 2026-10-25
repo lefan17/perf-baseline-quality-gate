@@ -84,6 +84,53 @@ def test_pool_exhaustion_raises_instead_of_blocking_forever():
         assert snap["saturation"] == 1.0
 
 
+def test_factory_failure_does_not_leak_a_permit():
+    """工厂抛异常时**不能漏掉名额** —— 否则池会永久假死。
+
+    这是一条真实的缺陷回归（P-17）。修复前：
+
+      size=2、工厂连抛两次 OSError 之后，第三次 `checkout()` 直接
+      `PoolExhaustedError`，而 `snapshot()["in_use"]` 还是 0 —— 一个
+      「满了却没人占着」的池。根因是 `checkout()` 先 `_sem.acquire()`
+      成功、再调 `_factory()`，而 `_factory()` 抛异常时没有
+      `_sem.release()`，每失败一次就永久少一个许可。
+
+    为什么这条比"少一个许可"严重：`sut/mysql_store.py` 把
+    `OperationalError` 转成 `MySQLUnavailableError` 后原样往上抛，而
+    `PoolExhaustedError` 被 `sut/app.py` 映射成 503 + `Retry-After: 1`。
+    两个 503 的**处置方式完全相反** —— 前者等上游恢复，后者要扩容。
+    泄漏之后，数据库只是闪断一下，服务就开始建议所有人去扩容。
+
+    所以这里断言三件事，缺一条都测不到这个缺陷：
+    1. 工厂的原始异常必须原样冒出来（不是被 PoolExhaustedError 顶替）；
+    2. 失败之后**还能借到**连接（名额没丢）；
+    3. `timeouts_total` 保持 0、`factory_errors_total` 记账 ——
+       两个数字混成一个，事故复盘就没法回答"该扩容还是该等"。
+    """
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise OSError("上游数据库暂时连不上")
+        return object()
+
+    pool = ConnectionPool(factory=factory, size=2, acquire_timeout_s=0.05)
+
+    for _ in range(2):
+        with pytest.raises(OSError):
+            pool.checkout()
+
+    # 第 3 次必须借得到。修复前这里抛的是 PoolExhaustedError。
+    conn = pool.checkout()
+    assert conn is not None
+
+    snap = pool.snapshot()
+    assert snap["in_use"] == 1, f"借出去一条，in_use 应该是 1：{snap}"
+    assert snap["timeouts_total"] == 0, f"没有一次是真的等超时：{snap}"
+    assert snap["factory_errors_total"] == 2, f"两次工厂失败要单独记账：{snap}"
+
+
 def test_pool_snapshot_reports_saturation():
     pool = ConnectionPool(factory=lambda: object(), size=4, acquire_timeout_s=0.2)
     assert pool.snapshot()["saturation"] == 0.0

@@ -93,6 +93,7 @@ class ConnectionPool:
             "created_total": 0,
             "reused_total": 0,
             "timeouts_total": 0,
+            "factory_errors_total": 0,
             "wait_ms_total": 0.0,
         }
 
@@ -150,7 +151,25 @@ class ConnectionPool:
             conn = self._free.get_nowait()
             reused = True
         except queue.Empty:
-            conn = self._factory()
+            # `_factory()` 会抛异常：数据库暂时连不上、账号错、DNS 挂了。
+            # 这条路径以前**不还名额**，于是每失败一次就永久少一个许可，
+            # 失败 `size` 次之后这个池就再也借不出东西了 —— 而它报的错是
+            # 「连接池已满，等待 500ms 后放弃」，把人引向「扩容」而不是
+            # 「上游不可用」。实测：size=2、工厂连抛两次后，第三次 checkout()
+            # 直接 PoolExhaustedError，而 `snapshot()['in_use']` 还是 0
+            # （一个"满了却没人占着"的池）。
+            #
+            # 所以这里必须先在 finally 里把名额还回去，再让原始异常往外走：
+            # 上层要看到的是 OSError / MySQLUnavailableError（503，等它恢复），
+            # 不是 PoolExhaustedError（503，扩容）。两种 503 的原因完全不同，
+            # 混成一个之后监控上永远分不出来。
+            try:
+                conn = self._factory()
+            except BaseException:
+                with self._lock:
+                    self._stats["factory_errors_total"] += 1
+                self._sem.release()
+                raise
             reused = False
 
         with self._lock:
@@ -240,6 +259,11 @@ class ConnectionPool:
             "created_total": int(stats["created_total"]),
             "reused_total": int(stats["reused_total"]),
             "timeouts_total": int(stats["timeouts_total"]),
+            # 工厂连不上导致的失败次数（**不计入** timeouts_total）。
+            # 这两个数字必须分开：timeouts 说明并发给多了，factory_errors
+            # 说明上游本身不可用。合成一个指标之后，事故复盘时没法回答
+            # 「当时是该扩容还是该等数据库回来」。
+            "factory_errors_total": int(stats["factory_errors_total"]),
             "avg_wait_ms": round(stats["wait_ms_total"] / stats["acquired_total"], 2)
             if stats["acquired_total"]
             else 0.0,

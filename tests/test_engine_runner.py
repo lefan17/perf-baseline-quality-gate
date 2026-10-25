@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -116,27 +117,95 @@ class TestRun:
         # 一旦 >users，"瓶颈在压测机"这个判断就失效了。
         assert 0 <= st.max_inflight <= 3
 
-    def test_same_config_produces_the_same_scenario_sequence_by_seed(self, base_url):
-        # 固定种子 42 是刻意写死的：不同机器上重跑要能复现同一条场景序列，
-        # 否则"这次比上次慢了 3%"里分不清是服务变了还是场景权重摇到了别的分支。
-        seen: list[str] = []
+    def test_same_seed_produces_the_same_scenario_pick_sequence(self):
+        """同 `(seed, worker_id)` → 同一条场景选择序列。
 
-        def make(tag: str):
-            def fn(session):
-                seen.append(tag)
-                return run_api_call(session, base_url, "GET", "/ok", scenario=tag)
+        ## 这条替换掉了一个名不副实的用例
 
-            return fn
+        原先的用例叫 `test_same_config_produces_the_same_scenario_sequence_by_seed`，
+        但它的断言只有：
 
-        scenarios = [(make("a"), 1), (make("b"), 1)]
-        Runner(base_url, scenarios, users=2, duration_s=0.2).run()
+            assert "a" in first and "b" in first
+
+        也就是**只要两个场景都出现过就算过** —— 而权重是 1:1、跑 0.2 秒、
+        两个线程，这个断言几乎不可能失败。它验证的性质是"引擎真的发了请求"，
+        不是用例名宣称的"同种子产生同序列"。名字与断言不符是危险的：
+        下一个读到这个名字的人会认为确定性已经被钉住了，于是不会再去补。
+
+        ## 为什么改成直接打 `build_picker`
+
+        确定性是 `build_picker(weights, random.Random(seed + worker_id))` 的
+        性质，是可以**逐项比对**的纯函数性质。走 `Runner.run()` 反而测不准：
+        线程调度决定谁先取随机数、每轮发出多少个请求也不确定，精确序列
+        必然抖动 —— 那不是被测对象的缺陷。原用例的注释里其实已经承认了这点
+        （「精确序列会因线程调度抖动而假红」），但结论下错了：该换测法，
+        而不是降级成一个什么都证明不了的断言。
+        """
+        from bench.engine import build_picker
+
+        def seq(seed: int, worker_id: int, n: int = 50) -> list[int]:
+            pick = build_picker([0.5, 0.5], random.Random(seed + worker_id))
+            return [pick() for _ in range(n)]
+
+        assert seq(42, 0) == seq(42, 0), "同种子两次取值序列不一致，可复现性失效"
+        assert seq(42, 0) != seq(42, 1), "不同 worker 拿到同一条序列，等于只有一份随机源"
+        assert seq(42, 0) != seq(43, 0), "换种子不改变序列，说明种子没被用上"
+        # 权重确实生效：偏向 0.9 时第 0 项必须明显更多。
+        pick0 = build_picker([0.9, 0.1], random.Random(42))
+        zeros = sum(1 for _ in range(2000) if pick0() == 0)
+        assert zeros > 1700, f"权重 0.9 的场景只被选中 {zeros}/2000 次，累积分布可能算错了"
+
+    def test_runner_seeds_each_worker_from_seed_plus_worker_id(self, base_url, monkeypatch):
+        """`Runner` 真的把 `seed + worker_id` 交给了 `build_picker`。
+
+        ## 为什么这条必须单独存在
+
+        上一条用例验证的是 `build_picker` **自己**是确定性的（纯函数性质）。
+        那是必要条件，但完全不够：`build_picker` 写得再对，只要 `Runner._worker`
+        传进去的是一个没种子的 `random.Random()`，线上依然不可复现。
+
+        这个区别不是假想 —— 本仓另一处 `bench/scenarios.py` 的 `_rnd()`
+        当时就是 `return random.Random()`，注释还写着「每个线程各自持有一个
+        Random」。**注释描述的性质与代码不符**，而没有任何用例能发现它。
+
+        ## 怎么测才对
+
+        精确序列在 `Runner.run()` 层面测不了（线程调度决定谁先取随机数，
+        每轮请求数也不固定）。但**接线**可以测：把 `build_picker` 换成记录器，
+        看它被调用了几次、每次收到的随机源状态是什么。这是确定性的，
+        而且正好覆盖"种子有没有真的被传下去"。
+
+        断言三件事：
+        1. 每个 worker 各调一次（不是全局共享一个 picker）；
+        2. 各 worker 的随机源状态互不相同（不是同一实例 / 同一状态）；
+        3. 同样的 `(seed, users)` 重跑，各 worker 的状态序列逐项相同（可复现）。
+        """
+        import bench.engine as engine
+
+        seen: list[object] = []
+        real = engine.build_picker
+
+        def recording(weights, rnd):
+            seen.append(rnd.getstate())
+            return real(weights, rnd)
+
+        monkeypatch.setattr(engine, "build_picker", recording)
+
+        scenarios = [(_scenario(base_url), 1)]
+        Runner(base_url, scenarios, users=3, duration_s=0.2, seed=42).run()
         first = list(seen)
 
+        assert len(first) == 3, f"3 个 worker 应各拿到一个 picker，实测 {len(first)} 次调用"
+        assert len(set(first)) == 3, "各 worker 的随机源状态相同，说明种子没按 worker 拆开"
+
         seen.clear()
-        Runner(base_url, scenarios, users=2, duration_s=0.2).run()
-        # 请求数不一定完全一致（线程被 GIL 调度影响），但**比例**必须偏。
-        # 这里只断言两个场景都出现了 —— 精确序列会因线程调度抖动而假红。
-        assert "a" in first and "b" in first
+        Runner(base_url, scenarios, users=3, duration_s=0.2, seed=42).run()
+        assert seen == first, "同 seed + 同 users 重跑，worker 的随机源状态不一致 → 不可复现"
+
+        # 换 seed 必须换状态，否则 seed 参数是个摆设。
+        seen.clear()
+        Runner(base_url, scenarios, users=3, duration_s=0.2, seed=43).run()
+        assert seen != first, "换 seed 后 worker 随机源状态未变，说明 Runner 忽略了 seed"
 
     def test_http_error_is_recorded_as_failed_sample_not_an_exception(self, base_url):
         # `_worker` 里那个 `except Exception` 是引擎的承重墙：被测服务返回

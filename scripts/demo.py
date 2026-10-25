@@ -25,10 +25,15 @@
 ## 用法
 
 ```bash
-python scripts/demo.py              # 完整四幕，约 60~90 秒
+python scripts/demo.py              # 完整四幕，本机实测约 12~15 秒
 python scripts/demo.py --keep       # 保留临时目录，方便演示后继续查
 python scripts/demo.py --duration 1 # 更快的口播版（数字更抖，但链路一样）
 ```
+
+> 早先这里写的是「约 60~90 秒」，那是照着 `STEP_DURATION = 2.0` × 4 幕
+> 心算出来的，**没有实测**。实测是 12.4 秒（Windows 11 / Python 3.12.10，
+> 输出末尾自己会打印 `演示结束：12.4 秒 / 5 条判定`）。
+> 一个"照着算"写下的数字，和"跑一遍"写下的数字，是小项目里最容易分叉的两件事。
 """
 
 from __future__ import annotations
