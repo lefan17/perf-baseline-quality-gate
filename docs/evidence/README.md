@@ -35,7 +35,7 @@ python platform_cli.py run --scenario item_detail_nocache --items 5000 --step-us
 # 索引：跑那 4 条断言（自动 seed 5 万行）
 python -m pytest tests/test_index_probe.py -v
 
-# 连接池：11 条（不需要 Redis，也不需要 MySQL）
+# 连接池：12 条（不需要 Redis，也不需要 MySQL）
 python -m pytest tests/test_connection_pool.py -v
 
 # 反向代理：需要一个 nginx（没有会自动跳过并打印安装提示）

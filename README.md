@@ -388,7 +388,7 @@ python scripts/distributed_run.py --workers 3 --users 15 --duration 8 --items 50
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（343 passed，约 135 秒；缓存/MySQL/分布式用例需要真容器或本地进程，没有则自动 skip）
+# 2. 跑平台自身的测试（369 passed / 19 skipped，约 130 秒；缓存/MySQL/分布式用例需要真容器或本地进程，没有则自动 skip）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -733,30 +733,38 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-343 passed in ~135s
+369 passed, 19 skipped in 124s
 ```
+
+> 19 条 skip 全部是**环境缺失**，不是没写完：12 条要可达的 MySQL
+> （`PERF_MYSQL_URL=127.0.0.1:3307`）、7 条要可达的 Redis
+> （`PERF_REDIS_URL=127.0.0.1:6379`）。它们在 CI 上会真的跑起来。
 
 | 测试文件 | 用例数 | 覆盖 |
 |---|---:|---|
-| `test_engine.py` | 13 | 分位数算法（nearest-rank）、Runner、样本合并、场景 ID 范围 |
+| `test_engine.py` | 18 | 分位数算法（nearest-rank）、Runner、样本合并、场景 ID 范围、worker 种子接线 |
 | `test_platform.py` | 77 | 基线对比、拐点定位、flaky 分析、全部 12 条门禁规则、尾比口径与绝对值口径各报一次、基线可比性、R3 只报数模式 |
 | `test_sut_api.py` | 20 | 被测服务功能（含**两种实现数据一致性交叉校验**）+ 临时目录回收 |
 | `test_probes.py` | 3 | 性能缺陷探针（真实数据量 20 000） |
 | `test_cache_layer.py` | 11 | Redis 缓存层：命中 / 负缓存挡穿透 / 写后失效 / `-ERR` 不等于不可用 / 无 Redis 时降级为 `backend=none` |
 | `test_index_probe.py` | 4 | 索引失效：断言执行计划是 `SEARCH` 还是 `SCAN`，并比较 SQL 层耗时 |
-| `test_connection_pool.py` | 11 | 连接池：复用 / 耗尽抛而不是阻塞 / 池满映射成 **503 + Retry-After**（不是 500）/ 默认关闭 / 归还后恢复 |
-| `test_cli.py` | 19 | CLI 解析器接线（每个子命令都绑定真实函数；`baseline` 的 5 个 action 也是契约） |
+| `test_connection_pool.py` | 12 | 连接池：复用 / 耗尽抛而不是阻塞 / 池满映射成 **503 + Retry-After**（不是 500）/ 默认关闭 / 归还后恢复 / **工厂抛异常不许泄漏许可** |
+| `test_cli.py` | 27 | CLI 解析器接线（每个子命令都绑定真实函数；`baseline` 的 5 个 action 也是契约） |
 | `test_dashboard.py` | 21 | 看板渲染接线（折线真的被画出来，不是定义了没用）+ 汇总口径单一来源 + 静态快照导出（不泄露本机路径） |
 | `test_r3_end_to_end.py` | 2 | R3 端到端：真的压一轮、真的比基线、真的会变红（`sut` + `perf` 标记） |
 | `test_rules_single_source.py` | 10 | 阈值只有一个住址（`gate_rules.yaml`），改 YAML 真的会改判定 |
 | `test_baseline_snapshot.py` | 26 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 / 记的是量出基线的机器 / 只报数模式 |
 | `test_check_coverage_script.py` | 25 | 门禁脚本自身的契约：配置缺失要退 1、排除路径写错要报错、失败按百分比升序、JSON 里改低 1pp 必须被抓到 |
-| `test_cli_commands.py` | 28 | 走 `main()` 真调每个子命令（当场抓到 `trend` 在干净库上抛 `no such table`） |
-| `test_engine_runner.py` | 13 | `Runner` 真跑：起 stdlib `ThreadingHTTPServer`、真开线程池、真丢热身样本、真把 500 记成失败样本 |
-| `test_dashboard_api.py` | 25 | 看板对外端点的契约（本仓没装 httpx，直接调端点函数） |
+| `test_cli_commands.py` | 33 | 走 `main()` 真调每个子命令（当场抓到 `trend` 在干净库上抛 `no such table`；`gate` 对 probe 轮必须按自己的 kind 取到基线） |
+| `test_engine_runner.py` | 14 | `Runner` 真跑：起 stdlib `ThreadingHTTPServer`、真开线程池、真丢热身样本、真把 500 记成失败样本、种子真的按 worker 拆开 |
+| `test_dashboard_api.py` | 26 | 看板对外端点的契约（本仓没装 httpx，直接调端点函数） |
 | `test_distributed.py` | 12 | 分布式：分片不给人 0 个用户 / **加权平均 p95 会把 900ms 报成 91ms**（对照组）/ 一个窗口而不是相加 / `ok_flags` 与命令级 `ok` 不能混 / 两个 worker 同 epoch 起跑且样本不丢 / worker 挂了整轮失败 |
-| `test_proxy_probe.py` | 10 | 反向代理探针：配置渲染（1.1/空 `Connection` 不能写反）、没有 nginx 时退出码必须是 0、三个口径都真的被量一次 |
-| **合计** | **343** | |
+| `test_proxy_probe.py` | 11 | 反向代理探针：配置渲染（1.1/空 `Connection` 不能写反）、后端端口只许出现在 `proxy_pass`、没有 nginx 时退出码必须是 0、三个口径都真的被量一次 |
+| `test_mysql_store.py` | 13 | 真 MySQL 写路径与「连接会坏」的池语义（没有 MySQL 时 12 条自动 skip） |
+| `test_env_config.py` | 8 | 环境变量容错：非法值不许在**导入期**炸掉服务，回退默认值并告警；`seed(items=0)` 就是 0 条 |
+| `test_demo_script.py` | 5 | `scripts/demo.py` 那条「一条命令把门禁跑红」的演示，退出码与关键输出都必须真的出现 |
+| `test_pytest_plugin.py` | 10 | 结果入库插件：`markers` 真的从 item 取到（原实现在 `TestReport` 上找 `.item`，恒为空串）；照文档独立跑要能成功（原来收尾阶段撞外键）；没设 `QUALITY_RUN_ID` 时连库文件都不该被创建 |
+| **合计** | **388** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -878,7 +886,8 @@ P95 从 105.9ms 到 110.2ms（+4.1%），门禁判「拦住」——
 
 | 文件 | 内容 |
 |---|---|
-| `docs/已知问题.md` | 14 个缺陷的完整记录（P-12 合并口径抹平长尾比、P-13 不可比基线、P-14 临时目录泄漏为本次新增）：机制、实测数字、门禁、探针 |
+| `docs/已知问题.md` | **26 个缺陷**的完整记录（P-1~P-26，每条含机制、实测数字、门禁、探针）| 
+| [`docs/初学者完全入门.md`](docs/初学者完全入门.md) | **第一次读这个仓库从这里开始**：一条压测的完整一生、六个目录谁调用谁、每一处设计背后的坑，10 章 + 附录 A/B/C |
 | `docs/度量口径.md` | 分位数算法、容忍带、拐点判据、flaky 判据的全部口径 |
 | `docs/诚实边界.md` | 结论的适用范围与不可外推的部分 |
 | `docs/incident-encoding-20261010/` | 一次源文件编码损坏事故的完整记录，与从 `.pyc` 重建的验证过程 |
@@ -890,7 +899,7 @@ P95 从 105.9ms 到 110.2ms（+4.1%），门禁判「拦住」——
 
 ```
 Python 3.12.10 · FastAPI 0.143 · uvicorn 0.54 · SQLite（WAL）
-pytest 9.1.1 · Playwright 未使用 · 无前端构建链 · 无分布式压测
+pytest 9.1.1 · Playwright 未使用 · 无前端构建链 · 分布式压测在 `bench/distributed.py`（见 §8）
 ```
 
 依赖全部**钉死**在 `requirements.txt`（全 `==`，版本取 `pip list --format=freeze`
@@ -942,16 +951,22 @@ profiles 隔开，因为跑压测是 CPU 独占的，和看板同时来会互相
 
 | 口径 | 命令 | 实测 |
 |---|---|---|
-| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **2705 stmts / 882 miss / 67%** |
-| 含 `tests/` 自身 | `--cov=.` | 5422 stmts / 947 miss / 83% |
+| 只算业务代码（**门槛口径**） | `--cov=bench --cov=metrics --cov=sut --cov=dashboard --cov=platform_cli` | **2988 stmts / 997 miss / 66.63%** |
+| 含 `tests/` 自身 | `--cov=.` | 6202 stmts / 1301 miss / 79.02% |
 
 **门槛取 40**，理由：
 
-- 低于实测 45，留 5 个点余量 —— 门槛贴着实测值时，任何一次无关改动
+- 低于实测 66.63，留出足够余量 —— 门槛贴着实测值时，任何一次无关改动
   都会让 CI 变红，而"稳定变红的门槛"唯一的结局是所有人学会忽略它；
-- 也不取 30 以下 —— 那对一个 45% 的仓库存量等于没有门槛；
-- README §6 引用的 **83%** 是另一个口径，**不要拿它和 40 比**，
+- 也不取 30 以下 —— 那对一个 66% 的仓库存量等于没有门槛；
+- README §6 引用的 **79.02%** 是另一个口径，**不要拿它和 40 比**，
   那等于拿"含自学题在内的高分"去比"专业课及格线"。
+
+> **这两个数字随时会动，而且我们不追着改。** 它们取决于这次跑的是
+> 哪台机器、Redis/MySQL 探不探得到 —— 本机实测里 19 条用例因探不到
+> Redis/MySQL 被 skip，而在 CI 上它们会真跑，覆盖率自然更高。
+> 想要当前值就自己跑上面那两条命令，别相信这一行里的历史快照
+> （历史上它写错过两次：一次是口径搞混，一次是代码变了文档没跟）。
 
 ### 2.1 per-file 覆盖率门槛：40% 看不见的那种失守
 
@@ -977,13 +992,14 @@ platform_cli.py   23.1%  (646 语句)   ← 平台的主入口
 |---|---|---|
 | `fail_under` | **60** | 棘轮：当前最差入选文件 - 2pp |
 | `min_statements` | 10 | 小于这个数的文件不参与（一个 5 行的 `__init__` 掉到 0% 没有信息量） |
-| `exclude` | 5 项 | 每项都带理由，见 `pyproject.toml` |
+| `exclude` | **6 项** | 每项都带理由，见 `pyproject.toml` |
 
-排除的五项和各自的理由：
+排除的六项和各自的理由：
 
 | 排除项 | 为什么不能算 |
 |---|---|
 | `sut/app.py`、`sut/db.py`、`sut/seed.py` | 跑在**子进程**里（`[sys.executable, "-m", "sut.seed"]` 与 `subprocess.Popen`），父进程的 coverage 追踪不到。硬拉只能改被测进程的启动方式 |
+| `sut/cache.py` | 同上：`sut.app` 在子进程里才 import 它，父进程追不到 |
 | `metrics/pytest_plugin.py` | 由 `platform_cli suite` 以 `-p metrics.pytest_plugin` 在子进程里动态加载，本进程内从不 import |
 | `bench/scenarios.py` | 场景构造器，每一行都在**真压测**里被执行，但单测不能真压（一条 8 秒 × 多梯度）。给它写测试只能靠 Runner 替身断言参数被传进去了 —— 那测的是替身 |
 
@@ -999,7 +1015,7 @@ python -m pytest tests/ -q \
 python scripts/check_coverage.py --report .coverage.json
 ```
 
-参与判定的 8 个文件，就是被追踪的 13 个文件里过了 `min_statements` 又不是排除项的那些。
+参与判定的 13 个文件，就是被追踪的 21 个文件里过了 `min_statements` 又不是排除项的那些。
 **同一个门槛配两套口径，等于有两个都不可信的数字。**
 
 **这是一条棘轮，不是一个目标值。** 规则写在 `pyproject.toml` 的注释里：
@@ -1021,19 +1037,23 @@ python scripts/check_coverage.py --report .coverage.json
 
 | 文件 | 条数 | 补掉了什么 |
 |---|---:|---|
-| `tests/test_cli_commands.py` | 28 | 走 `main()` 真调每个子命令。当场抓到一个真 bug：`trend` 在干净库上抛 `no such table: runs` —— 而它是最可能被人在空仓库上第一个跑的命令 |
-| `tests/test_engine_runner.py` | 13 | `Runner` 从没被真跑过（只测了分位数等纯函数）。起一个 stdlib `ThreadingHTTPServer`，真开线程池、真丢热身样本、真把 500 记成失败样本 |
-| `tests/test_dashboard_api.py` | 25 | `/api/gate` 等端点是**门禁对外的唯一门面**，此前一条都没测。包括"无梯度数据必须判 blocked"这条历史事故的回归 |
+| `tests/test_cli_commands.py` | 33 | 走 `main()` 真调每个子命令。当场抓到一个真 bug：`trend` 在干净库上抛 `no such table: runs` —— 而它是最可能被人在空仓库上第一个跑的命令 |
+| `tests/test_engine_runner.py` | 14 | `Runner` 从没被真跑过（只测了分位数等纯函数）。起一个 stdlib `ThreadingHTTPServer`，真开线程池、真丢热身样本、真把 500 记成失败样本 |
+| `tests/test_dashboard_api.py` | 26 | `/api/gate` 等端点是**门禁对外的唯一门面**，此前一条都没测。包括"无梯度数据必须判 blocked"这条历史事故的回归 |
 
 | 模块 | 加门禁前 | 现在 |
 |---|---:|---:|
-| `platform_cli.py` | 23.1% | **62.4%** |
-| `bench/engine.py` | 52.3% | **98.4%** |
+| `platform_cli.py` | 23.1% | **62.0%** |
+| `bench/engine.py` | 52.3% | **98.5%** |
 | `dashboard/app.py` | 55.9% | **98.0%** |
-| `metrics/gate.py` | 62.7% | 68.1% |
-| `metrics/analysis.py` | 70.1% | 70.1% |
-| 全仓（门槛口径） | 58.79% | **67%** |
-| 用例数 | 188 | **343** |
+| `metrics/gate.py` | 62.7% | 68.9% |
+| `metrics/analysis.py` | 70.1% | 71.0% |
+| 全仓（门槛口径） | 58.79% | **66.63%** |
+| 用例数 | 188 | **388** |
+
+> 上面「加门禁前」那一列是历史快照，保留它是为了说明**这道门禁确实抓到过东西**；
+> 「现在」那一列会随代码变化，读它的时候顺手跑一次 `check_coverage.py` 核对，
+> 别把它当常量。
 
 提高覆盖率不是目标本身。把 `sut/*` 从 0% 拉起来需要子进程追踪方案
 （`coverage run --parallel-mode` 之类），而那会改变压测进程的启动路径 ——
@@ -1070,9 +1090,11 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 带 `continue-on-error: true`，理由是"先不逼着改格式"。实测这句理由站不住——只报告的
 格式检查等于没有格式检查，没人会因为一条黄色警告去改空白。当天在本机跑了
 `ruff format .`，**17 个文件被重排、21 个已合规**，重排后 `ruff format --check .`
-是 **38 files already formatted**，`pytest tests/ -q` 仍是 180 passed（当时的口径；同一天
-后来又补了看板静态导出的 8 条测试到 188，再之后补 per-file 门禁那三组测试到 **279**）、
-`mypy` 仍是 16 source files 零问题。既然存量已经清零，就没有理由再让它非阻塞：
+是 **38 files already formatted**，`pytest tests/ -q` 当时是 180 passed（那是历史口径；
+同一天后来又补了看板静态导出的 8 条测试到 188，再之后补 per-file 门禁那三组测试到 279，
+现在这棵树是 **369 passed / 19 skipped**）、
+`mypy` 当时是 16 source files 零问题（现在 **29 source files**）。既然存量已经清零，
+就没有理由再让它非阻塞：
 现在这一步与 `ruff check .`、`mypy` 一样是**阻塞项**，与
 `fullstack-test-framework` 的 `lint` job 同一口径。改动基本落在换行与缩进
 （`platform_cli.py` 231/201 行最多），不涉及任何判定逻辑。
@@ -1085,13 +1107,26 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 `sut/server_ctl.py`）→ 用 `[[tool.mypy.overrides]]` 的
 **`disable_error_code` 逐模块按错误码登记**，而不是在源码里撒 `# type: ignore`：
 
-| 模块 | 豁免的错误码 | 站点 |
-|---|---|---|
-| `metrics.gate` | `assignment` | `gate.py:297` |
-| `metrics.analysis` | `union-attr` | `analysis.py:653` |
-| `dashboard.app` | `arg-type` | `app.py:41` |
-| `sut.server_ctl` | `attr-defined` | `server_ctl.py:66` |
-| `platform_cli` | `assignment` | `platform_cli.py`（`rows_by_mode` 容空语义） |
+| 模块 | 豁免的错误码 | 站点（`path:line` 为实测值） | 真实报错 |
+|---|---|---|---|
+| `metrics.gate` | `assignment` | `gate.py:296` | `Incompatible types in assignment (expression has type "Any \| None", variable has type "dict[Any, Any]")` |
+| `metrics.analysis` | `union-attr` | `analysis.py:671` | `Item "None" of "Comparability \| None" has no attribute "describe"` |
+| `dashboard.app` | `arg-type` | `app.py:42` | `Argument 1 to "load_rules" has incompatible type "str \| Path"; expected "str"` |
+| `sut.server_ctl` | `attr-defined` | `server_ctl.py:66` | `"object" has no attribute "close"` |
+| `platform_cli` | `assignment` | `platform_cli.py:362` | `Incompatible types in assignment (expression has type "list[dict[Any, Any]] \| None", target has type "list[dict[Any, Any]]")` |
+
+这张表里的行号是**可以自查的** —— 做法是把 `pyproject.toml` 里所有
+`[[tool.mypy.overrides]]` 块删掉再跑一次 `mypy`：
+
+```powershell
+# 造一份去掉 overrides 的临时配置（不要改 pyproject.toml 本身）
+python -X utf8 -c "import re,pathlib; s=pathlib.Path('pyproject.toml').read_text(encoding='utf-8'); pathlib.Path('_probe.toml').write_text(re.sub(r'\[\[tool\.mypy\.overrides\]\][\s\S]*?(?=\n\[|\Z)','',s),encoding='utf-8')"
+python -m mypy --config-file _probe.toml bench metrics sut dashboard platform_cli.py scripts
+# → Found 5 errors in 5 files (checked 29 source files)，行号应与上表一致
+```
+
+这条自查命令的意义：**如果行号漂了，说明上表已经不是"当前欠债"而是"历史欠债"**。
+漂了就该更新，不该让它慢慢变成一段没人验证的文字。
 
 这是**一份可枚举的欠债清单**，不是"假装没有类型"。每条豁免都做过
 承重验证：把 `module` 改成一个不存在的名字，对应的错误立刻回来 ——
@@ -1101,9 +1136,8 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 > 同一个模块里将来出现同类错误也不会报 —— 这是这份配置已知的代价，
 > 接受它的原因是"整模块 `ignore_errors`"（一开始的写法）代价更大：
 > 那样连**别的**错误码也一起消失，`mypy` 会输出
-> `Success: no issues found in 15 source files`（那份配置当时的树上是 15 个源文件；
-> 现在这棵树是 **16 个**，见下方实测），
-> 而 5 个真实错误一个都没消失 —— 那正是这个仓库最反对的**静默放行**。
+> `Success: no issues found` 而 5 个真实错误一个都没消失 ——
+> 那正是这个仓库最反对的**静默放行**。
 
 ### 4. 依赖锁文件与漏洞扫描
 

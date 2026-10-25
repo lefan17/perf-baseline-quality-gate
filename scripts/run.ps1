@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     一键脚本：把 README「快速开始」里那段手敲命令固化下来。
 
@@ -26,7 +26,7 @@
     help     打印将要执行的命令，不真跑（默认）—— 也是验收标准里"跑到打印级别"的那条
     setup    建 venv 并装依赖（运行时 + 开发工具链）
     env      显示当前环境档案与生效变量
-    test     跑平台自身用例（180 passed，约 85 秒）
+    test     跑平台自身用例（369 passed / 19 skipped，约 130 秒）
     cov      跑用例并套覆盖率门槛（口径：只算业务代码）
     lint     ruff + mypy + 依赖清单一致性
     lock     重新生成 requirements.lock

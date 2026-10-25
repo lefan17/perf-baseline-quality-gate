@@ -14,7 +14,7 @@ python -m venv .venv
 
 # 2. 一键脚本（把下面几条命令都包好了）
 pwsh -File scripts\run.ps1 -Task help
-pwsh -File scripts\run.ps1 -Task test      # 跑 180 条用例
+pwsh -File scripts\run.ps1 -Task test      # 跑 388 条用例（本机 19 条因缺 Redis/MySQL skip）
 pwsh -File scripts\run.ps1 -Task lint      # ruff + mypy + 依赖一致性
 pwsh -File scripts\run.ps1 -Task perf      # 一轮真压测 + 门禁（约 1 分钟）
 
@@ -80,14 +80,14 @@ README 里每一个数字都是实测的。改文档时：
 - 已存在的数字**不许改**，除非你自己重跑并给出新输出；
 - 尤其是这些**有论证的**数字，改动要先读懂它们的论证：
   - `gate_rules.yaml` 的 `slow_report_p95_ms_max: 150.0` / `n1_over_agg_max: 10.0`
-  - README 里的 2.27σ 容忍带论证、7.81× 比值、180 passed、12 条门禁规则
+  - README 里的 2.27σ 容忍带论证、7.81× 比值、369 passed / 19 skipped、12 条门禁规则
 
 ---
 
 ## 三、测试纪律
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 180 passed，约 85 秒
+& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 369 passed / 19 skipped，约 130 秒
 ```
 
 - **不许删测试或改断言**来让门槛达标。门槛是为了暴露问题，不是为了通过。
@@ -108,20 +108,36 @@ README 里每一个数字都是实测的。改文档时：
     --cov-report=term-missing --cov-fail-under=40
 ```
 
-- 门槛 40 对应的是**只算业务代码**的口径（实测 45%）。
-- README §6 引用的 **65%** 是另一个口径（`--cov=.`，含 `tests/`）。
-  两个数都对，但它们回答的不是同一个问题 —— **不要拿 65% 去和 40 比较**，
+- 门槛 40 对应的是**只算业务代码**的口径（本机实测 66.63%）。
+- README §6 引用的 **79.02%** 是另一个口径（`--cov=.`，含 `tests/`）。
+  两个数都对，但它们回答的不是同一个问题 —— **不要拿 79 去和 40 比较**，
   那是拿"含自学题在内的高分"去比"专业课及格线"。
+- 这两个数字会随代码与"Redis/MySQL 探不探得到"变化（探不到就有
+  19 条用例 skip，覆盖率随之变低）。**要当前值就自己跑一遍**，
+  不要把这段里的数字当常量。
 - ⚠️ 写 `--cov` 时必须重复写多个 `--cov=xxx`，**不能**写 `--cov=a,b`：
   本版本（pytest-cov 7.1.0）下逗号写法**静默收集不到数据**，报告出 0% 而不是报错。
 
 ### 已知盲区（不要假装它们不存在）
 
-| 模块 | 覆盖率 | 为什么低 |
+| 模块 | 覆盖率（本机实测） | 为什么低 |
 |---|---:|---|
-| `sut/app.py` / `sut/db.py` / `sut/seed.py` | 0% | SUT 跑在**子进程**里，coverage 默认不追踪子进程 |
+| `sut/app.py` | 31.4% | 跑在**子进程**里，coverage 默认不追踪子进程 |
+| `sut/db.py` | 61.0% | 同上 |
+| `sut/seed.py` | 80.9% | 同上 |
+| `sut/cache.py` | 34.8% | 同上：只有 `sut.app` 在子进程里 import 它 |
+| `sut/mysql_store.py` | 24.2% | 要一台真的 MySQL；本机探不到就整批 skip（12 条） |
+| `sut/redis_client.py` | 41.8% | 要一台真的 Redis，同上（7 条） |
 | `metrics/pytest_plugin.py` | 0% | 只在 `suite` 子命令起的 pytest 子进程里被加载 |
-| `platform_cli.py` | 23% | 压测主路径（`cmd_run` / `cmd_noise` / `cmd_prune`）要真起服务，用例里只覆盖了参数解析与若干纯函数 |
+| `platform_cli.py` | 62.0% | 压测主路径（`cmd_run` / `cmd_noise` / `cmd_prune`）要真起服务，用例里只覆盖了参数解析与若干纯函数 |
+
+> 其中 `sut/app.py`、`sut/db.py`、`sut/seed.py`、`sut/cache.py`、
+> `metrics/pytest_plugin.py`、`bench/scenarios.py` 已在 `pyproject.toml` 的
+> `[tool.coverage.perfile]` 里**显式排除**并写明理由，不参与 60% 的判定。
+> `sut/mysql_store.py` 与 `sut/redis_client.py` **仍在参与判定** ——
+> 本机没有 Redis/MySQL 时它们必然低于 60%，这就是 `check_coverage.py`
+> 在本机退 1 的真实原因，**不是脚本有 bug**。
+> CI 上有 service container，那两个文件会被真实覆盖。
 
 **提高覆盖率不是目标本身。** 把 `sut/*` 从 0% 拉起来需要
 `coverage run --parallel-mode` 之类的子进程追踪方案，
@@ -212,7 +228,7 @@ $env:PERF_ENV="dev"          # 或 staging / prod / 不设
 
 ## 八、CI
 
-`.github/workflows/quality-gate.yml` 有五个 job：
+`.github/workflows/quality-gate.yml` 有**六个** job：
 
 | job | 作用 | 会拦住合并吗 |
 |---|---|---|
@@ -221,6 +237,12 @@ $env:PERF_ENV="dev"          # 或 staging / prod / 不设
 | `platform-tests` | 跑用例 + 套件门禁 + 覆盖率门槛 | ✅ 会 |
 | `perf-gate` | 压测 + 基线劣化门禁 | ✅ 会 |
 | `n1-probe` | 缺陷探针（**期望它红**） | ❌ 不会 |
+| `pages` | 把看板导成静态页推到 `gh-pages` | ❌ 不会（见下） |
+
+`pages` 也挂了 `continue-on-error`，理由与别的非阻塞项不同：**门禁红了也要更新看板**。
+红的那些轮次恰恰最需要被看见 —— "这次为什么红了"、"是慢慢变慢还是突然崩"，
+都只能从看板上读。让"发布看板失败"反过来卡住合并，等于在出问题时
+先关掉唯一能解释问题的窗口。
 
 关键设计：**判定逻辑不在 YAML 里，在平台里**。
 workflow 只负责调用和读退出码，阈值散落在 CI 配置里是门禁最常见的退化方式。

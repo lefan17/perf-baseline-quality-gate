@@ -71,9 +71,9 @@
       ]
     },
     "index": {
-      "source": "SQL 层实测（10 万行 / 单连接 / 各 100 次取中位）",
+      "source": "SQL 层实测（5 万行 / 单连接 / 各 30 次取中位）",
       "reproduce": "python -m pytest tests/test_index_probe.py -v（4 条：执行计划 + 倍数 + 数据量下限）",
-      "produced_at": "2026-10-24T19:58:00+08:00",
+      "produced_at": "2026-10-25T23:40:00+08:00",
       "indexed": {
         "sql": "SELECT COUNT(*) FROM items WHERE category_id = ?",
         "median_ms": 0.218,
@@ -86,6 +86,7 @@
       },
       "ratio": 29,
       "notes": [
+        "**刻意的口径修正**：这份证据早先写的是「10 万行 / 各 100 次取中位」，而 `tests/test_index_probe.py` 的 `ROWS = 50_000`、`_median_ms(..., rounds=30)` 从来就是 5 万行 / 30 次（原文写作：SQL 层实测（10 万行 / 单连接 / 各 100 次取中位））。按本节的 `reproduce` 命令跑，跑出来的不是这份快照里的 0.218ms vs 6.337ms。原文已改回代码的实际参数 —— 一份「照它抄的步骤跑不出它的数字」的证据，比没有证据更坏。",
         "**刻意不做端到端断言**：同样的 29 倍套上 HTTP 之后，单请求固定开销约 25ms 会把 6ms 压成 10% 左右的抖动，而单机压测两轮之间本来就有 3% 量级的 CV。在测不出来的地方不假装测得出来。",
         "判据是「执行计划 SEARCH vs SCAN」+「SQL 层耗时倍数 ≥ 5」两条，前者是确定的、不依赖机器速度的。",
         "这条探针同时守两件事：索引失效真的会慢；索引别被人悄悄删了（删掉后两种写法都变 SCAN，倍数掉到 1 左右，测试变红）。",
@@ -93,7 +94,7 @@
       ]
     },
     "pool": {
-      "source": "tests/test_connection_pool.py（11 条：4 条单元 + 3 条配置 + 4 条端到端）",
+      "source": "tests/test_connection_pool.py（12 条：4 条单元 + 3 条配置 + 5 条端到端/回归）",
       "reproduce": "python -m pytest tests/test_connection_pool.py -v",
       "produced_at": "2026-10-24T20:38:00+08:00",
       "behavior": {
