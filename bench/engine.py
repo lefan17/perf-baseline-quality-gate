@@ -27,6 +27,7 @@ N 个 worker，靠"同一 epoch 开跑 + 回传原始样本池化重算"保证�
 from __future__ import annotations
 
 import math
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -162,6 +163,29 @@ def merge_stats(stats: list[Stats], label: str) -> Stats:
 ScenarioFn = Callable[[requests.Session], Sample]
 
 
+def build_picker(weights: Sequence[float], rnd: random.Random) -> Callable[[], int]:
+    """按权重构造"选场景"的闭包，随机源由调用方传入。
+
+    为什么把随机源做成参数而不是模块级共享：见 `Runner` 的说明。
+    权重要先归一化（调用方保证），这里只负责累积分布。
+    """
+    cum: list[float] = []
+    acc = 0.0
+    for w in weights:
+        acc += w
+        cum.append(acc)
+    last = len(cum) - 1
+
+    def pick() -> int:
+        r = rnd.random()
+        for j, c in enumerate(cum):
+            if r <= c:
+                return j
+        return last
+
+    return pick
+
+
 class Runner:
     """定并发压测执行器。
 
@@ -170,6 +194,12 @@ class Runner:
     事件循环、网卡打满都会让"服务变慢"这个结论站不住。
     所以引擎顺带采了 `inflight`（实际在途请求数）：配置 50 并发但实测只有 12，
     说明瓶颈在压测机，不在被测服务。
+
+    场景选择的随机源是**每个 worker 一个** `random.Random(seed + worker_id)`，
+    不是所有 worker 共享一个。这里曾经写的是共享实例并注释「同样的配置，
+    同样的场景选择序列」——那句话是假的：谁先拿到 GIL 谁先取随机数，
+    线程调度变了序列就变了；顺带还让随机数生成在 GIL 下变成串行点之一，
+    把压测端自己的争用混进了"服务变慢"的数字里。
     """
 
     def __init__(
@@ -182,6 +212,7 @@ class Runner:
         ramp_up_s: float = 0.0,
         timeout_s: float = 10.0,
         warmup_drop_s: float = 0.0,
+        seed: int = 42,
     ):
         if not scenarios:
             raise ValueError("至少要有一个场景")
@@ -197,6 +228,7 @@ class Runner:
         self.ramp_up_s = ramp_up_s
         self.timeout_s = timeout_s
         self.warmup_drop_s = warmup_drop_s
+        self.seed = seed
 
         self._samples: list[Sample] = []
         self._lock = threading.Lock()
@@ -210,7 +242,7 @@ class Runner:
         with self._lock:
             self._samples.append(s)
 
-    def _worker(self, worker_id: int, pick: Callable[[int], int], spawn_delay: float) -> None:
+    def _worker(self, worker_id: int, spawn_delay: float) -> None:
         if spawn_delay:
             time.sleep(spawn_delay)
         session = requests.Session()
@@ -218,10 +250,12 @@ class Runner:
         # 转发的开销，而 P95/尾比这些数字正是本仓全部结论的来源。
         session.trust_env = False
         session.headers.update({"User-Agent": "perf-baseline-platform/1.0", "Connection": "keep-alive"})
-        idx = worker_id
+        # 每个 worker 独立的随机源：种子由 (seed, worker_id) 决定，
+        # 所以"同样的配置 + 同样的并发数"是真的可复现，而不是取决于线程调度。
+        pick = build_picker(self.weights, random.Random(self.seed + worker_id))
         try:
             while not self._stop.is_set():
-                fn = self.scenarios[pick(idx)][0]
+                fn = self.scenarios[pick()][0]
                 with self._lock:
                     self._inflight += 1
                 try:
@@ -243,7 +277,6 @@ class Runner:
                 # 全被当成热身丢掉，过滤逻辑又会因为"丢完没剩"而整体回退）。
                 sample.at = time.perf_counter() - self._start
                 self._record(sample)
-                idx += 1
                 if self.think_time_s:
                     self._stop.wait(self.think_time_s)
         finally:
@@ -258,22 +291,6 @@ class Runner:
     # -- 对外接口 --------------------------------------------------------- #
     def run(self) -> Stats:
         try:
-            import random
-
-            rnd = random.Random(42)  # 固定种子：同样的配置，同样的场景选择序列
-            cum: list[float] = []
-            acc = 0.0
-            for w in self.weights:
-                acc += w
-                cum.append(acc)
-
-            def pick(i: int) -> int:
-                r = rnd.random()
-                for j, c in enumerate(cum):
-                    if r <= c:
-                        return j
-                return len(cum) - 1
-
             self._samples = []
             self._inflight_samples = []
             self._stop.clear()
@@ -285,7 +302,7 @@ class Runner:
             spawn_step = self.ramp_up_s / self.users if self.ramp_up_s and self.users else 0.0
             with ThreadPoolExecutor(max_workers=self.users) as pool:
                 for i in range(self.users):
-                    pool.submit(self._worker, i, pick, i * spawn_step)
+                    pool.submit(self._worker, i, i * spawn_step)
                 time.sleep(self.duration_s)
                 self._stop.set()
 

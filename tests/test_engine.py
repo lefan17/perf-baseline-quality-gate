@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
-from bench.engine import Sample, merge_stats, percentile, run_api_call, summarize
+from bench.engine import Runner, Sample, build_picker, merge_stats, percentile, run_api_call, summarize
 from bench.scenarios import configure_item_range, item_id_max
 
 pytestmark = pytest.mark.engine
@@ -181,3 +183,74 @@ def test_run_api_call_measures_elapsed():
     s = run_api_call(_Session(200), "http://x", "GET", "/a")
     assert s.elapsed_ms >= 0
     assert s.scenario == "GET /a"
+
+
+# --------------------------------------------------------------------------- #
+# 场景选择的随机源
+#
+# 这里曾经是"所有 worker 共享一个 random.Random(42)"，注释写着
+# 「同样的配置，同样的场景选择序列」——那句话是假的：谁先拿到 GIL 谁先取，
+# 线程调度一变序列就变。顺带随机数生成还成了 GIL 下的串行点之一，
+# 把压测端自己的争用混进了"服务变慢"的数字里。
+# --------------------------------------------------------------------------- #
+def test_picker_is_reproducible_for_the_same_seed():
+    """同一个种子必须给出同一串选择，否则"可复现"就是空话。"""
+    a = build_picker([0.5, 0.3, 0.2], random.Random(42))
+    b = build_picker([0.5, 0.3, 0.2], random.Random(42))
+    assert [a() for _ in range(50)] == [b() for _ in range(50)]
+
+
+def test_picker_differs_across_seeds():
+    """不同种子必须给出不同序列 —— 否则"每 worker 独立"就退化成同一条流。"""
+    a = build_picker([0.5, 0.3, 0.2], random.Random(42))
+    b = build_picker([0.5, 0.3, 0.2], random.Random(43))
+    assert [a() for _ in range(50)] != [b() for _ in range(50)]
+
+
+def test_picker_respects_weights():
+    """权重为 0 的场景永远不该被选中，权重独占的场景必须总被选中。"""
+    pick = build_picker([1.0, 0.0], random.Random(7))
+    assert {pick() for _ in range(200)} == {0}
+
+
+def test_picker_never_returns_out_of_range():
+    """累积分布浮点累加可能略小于 1，最后一个分支必须兜住。"""
+    pick = build_picker([0.2, 0.3, 0.5], random.Random(11))
+    seen = {pick() for _ in range(500)}
+    assert seen <= {0, 1, 2}
+
+
+def test_runner_seeds_each_worker_from_seed_plus_worker_id(monkeypatch):
+    """Runner 必须给每个 worker 独立的种子，而不是共享一个实例。
+
+    直接断言构造 `Random` 时传入的种子：seed=42 + worker_id。
+    """
+    import bench.engine as engine_module
+
+    seeds: list[int] = []
+    real_random = random.Random
+
+    def spy(seed: int) -> random.Random:
+        seeds.append(seed)
+        return real_random(seed)
+
+    monkeypatch.setattr(engine_module.random, "Random", spy)
+
+    runner = Runner(
+        "http://127.0.0.1:1",
+        [(lambda session: Sample("x", 200, 1.0, True), 1)],
+        users=2,
+        duration_s=1.0,
+        seed=42,
+    )
+
+    def one_shot(session):  # noqa: ANN001 - 一个样本就收工
+        runner._stop.set()
+        return Sample("x", 200, 1.0, True)
+
+    runner.scenarios = [(one_shot, 1)]
+    for worker_id in (0, 1):
+        runner._worker(worker_id, 0.0)
+    runner._stop.set()
+
+    assert seeds == [42, 43], f"每个 worker 应拿到 seed+worker_id，实际 {seeds}"
