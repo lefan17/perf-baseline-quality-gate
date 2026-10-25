@@ -131,10 +131,16 @@ known-first-party = ["bench", "dashboard", "metrics", "sut"]
 # 也不用 `# type: ignore` 在源码里撒点 —— 撒点之后没人知道还剩多少真问题。
 [tool.mypy]
 python_version = "3.12"
-# scripts/proxy_probe.py 与 scripts/distributed_run.py 是被点名纳入的脚本：
-# 它们都是会被人照着跑、并且要判断「测出来的数字是否可信」的测量工具，
-# 值一份类型检查。其余 scripts/check_*.py 是门禁脚本，纳入要连着清一批存量问题，单独排期。
-files = ["bench", "metrics", "sut", "dashboard", "platform_cli.py", "scripts/proxy_probe.py", "scripts/distributed_run.py"]
+# `scripts/` 整体纳入，而不是点名几个：
+#
+# 早先只点名了两个探针脚本（proxy_probe / distributed_run），理由写的是
+# 「其余 check_*.py 要连着清一批存量问题，单独排期」。这条理由**已经过期**：
+# 实测 `python -m mypy scripts/` 是 Success，四个门禁脚本零类型错误，只是没被纳入。
+# 而没被纳入的后果是它们会**悄悄退化** —— 下一次改动引入类型错误，CI 不会说话。
+#
+# 现在统一成 "scripts"，新增脚本自动进入检查；要排除什么就写进 exclude，
+# 而不是靠"忘记加进 files"。
+files = ["bench", "metrics", "sut", "dashboard", "platform_cli.py", "scripts"]
 exclude = ["^\\.venv/", "^tests/"]
 
 # 必需：仓库里 bench/、metrics/ 等都是「无 __init__.py 的 src 布局同名包」，
