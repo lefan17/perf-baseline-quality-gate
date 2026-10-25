@@ -248,6 +248,44 @@
           "error_rate": 0.0
         }
       }
+    },
+    "distributed": {
+      "source": "scripts/distributed_run.py --workers 3 --users 15 --duration 8 --items 5000",
+      "reproduce": "python scripts/distributed_run.py --workers 3 --users 15 --duration 8 --items 5000",
+      "produced_at": "2026-10-25T13:05:00+08:00",
+      "profile": {
+        "machine": "Windows 11 / 本机单进程 SUT（FastAPI + SQLite, report_mode=agg）",
+        "items": 5000,
+        "total_users": 15,
+        "workers": 3,
+        "duration_s": 8
+      },
+      "single_process": {
+        "total": 2808,
+        "rps": 397.81,
+        "p50_ms": 33.89,
+        "p95_ms": 78.58,
+        "p99_ms": 104.48,
+        "error_rate": 0.0
+      },
+      "distributed_pooled": {
+        "total": 2701,
+        "rps": 382.9,
+        "p50_ms": 33.95,
+        "p95_ms": 85.45,
+        "p99_ms": 126.61,
+        "error_rate": 0.0
+      },
+      "naive_weighted_average_p95_ms": 84.62,
+      "window_s": 8.05,
+      "max_clock_skew_ms": 8.62,
+      "notes": [
+        "RPS 0.96x：同一台机器上的 3 个 worker 抢同一块 CPU，分布式解决的是压测端上限，不是提速。",
+        "naive 口径（按样本数加权平均各 worker p95）在本次运行里和池化值接近，但它是错的：worker 分布偏斜时会把 900ms 报成 91ms（见 tests/test_distributed.py 的对照组）。",
+        "分位数是顺序统计量，合并必须回到原始样本；协议回传原始数组，20 000 个样本约 300KB。",
+        "窗口 8.05s 是整轮的统一窗口，不是各 worker 耗时之和。",
+        "时钟偏移 8.62ms 是 hello 往返估出的上界（含一半 RTT），同机多进程本来就不该大。"
+      ]
     }
   },
   "notes": [

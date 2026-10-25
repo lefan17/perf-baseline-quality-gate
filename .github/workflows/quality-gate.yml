@@ -329,6 +329,33 @@ jobs:
             echo "> 差值是「锁粒度」的价格，不是代码路径的差异；绝对值不可外推。"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # 分布式压测的最小形态：3 个 worker 进程 + 1 个 coordinator。
+      #
+      # 为什么放进 CI：这段代码最容易在"只在本机试过"的情况下悄悄坏掉 ——
+      # 进程起不来、端口拿不到、样本回传不全，都会让结果看起来只是"慢一点"。
+      # 这里只发布数字、断言"能跑通且样本没丢"，不对比值下任何结论：
+      # 同一个 runner 上跑 3 个 worker，抢的是同一块 CPU，比值没有意义。
+      - name: 分布式压测冒烟（3 worker，只发布数字）
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          python scripts/distributed_run.py \
+            --workers 3 --users 12 --duration 5 --items 2000 \
+            --no-single | tee /tmp/distributed.txt
+          grep -q "dist/3w" /tmp/distributed.txt
+          {
+            echo "## 分布式压测冒烟（1 coordinator + 3 worker，同一台 runner）"
+            echo ""
+            echo '```'
+            cat /tmp/distributed.txt
+            echo '```'
+            echo ""
+            echo "> 同一台机器上的 3 个 worker 抢的是同一块 CPU，"
+            echo "> 这里只验证「同一 epoch 开跑 + 样本池化 + 一个窗口」这条链路是通的，"
+            echo "> 不证明扩容能力。`naive_p95` 是错的合并方式，留着当对照。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 覆盖率门槛（业务代码 ≥ 40%）
         run: |
           python -m pytest tests/ -q \

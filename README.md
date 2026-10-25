@@ -38,11 +38,12 @@ CI 每轮把 `dashboard` 渲染成**一页自包含 HTML** 推到 `gh-pages`，�
 | **压的是什么** | 内置被测服务（FastAPI + SQLite），**故意保留一个 N+1 缺陷**：`agg` 单条 SQL 聚合 vs `n1` 逐供应商查询，20k 数据下约 7.8× |
 | **12 条规则** | R1–R5（性能）+ P0–P3（探针）+ S1–S3（套件），阈值全部集中在 `gate_rules.yaml` |
 | **中间件与链路** | 一条**真 Redis**（CI 用 service container）→ 热点集命中 P95 16.8ms vs 无缓存 36.9ms（2.2×）；索引失效在 SQL 层 29×；再加一层 **nginx 反代探针**：上游连接不复用时 P95 再 1.70×、错误率从 0.00% 变 18.67%；再加一层**写路径对照**：同一写动作换真 MySQL，Windows 上 RPS 2.72×、CI 上反过来 0.64×（见 §7，方向不能外推） |
+| **压测端能不能扩展** | 最小分布式：1 coordinator + N worker（`bench/distributed.py`）。靠「同一 epoch 开跑 + 回传原始样本池化重算」保证口径不歪；本机 3 worker 对单进程 RPS **0.96×**（抢同一块 CPU），价值是突破压测端上限而不是提速。**没有**服务发现 / 故障重投 / 心跳 |
 | **怎么证明门禁会红** | `tests/test_r3_end_to_end.py` 起真 CLI + 真 sqlite，把基线改快 10× 后断言报告出现 `[FAIL]`、退出码 1 |
 | **怎么跑** | `pip install -r requirements.txt` → `python platform_cli.py run --label local` |
 | **看什么** | [在线看板](https://lefan17.github.io/perf-baseline-quality-gate/)：趋势图、基线对比、门禁结果 |
 | **数字哪来的** | [`docs/evidence/summary.json`](docs/evidence/summary.json)：带 run_id、生成时间与复核命令 |
-| **哪些数字不能信** | [`docs/诚实边界.md`](docs/诚实边界.md)：单机引擎无分布式能力、SQLite 单写者、绝对数字不可外推（比例关系可以） |
+| **哪些数字不能信** | [`docs/诚实边界.md`](docs/诚实边界.md)：分布式只抬一层（无服务发现/重投）、SQLite 单写者、绝对数字不可外推（比例关系可以） |
 
 > 下面各节是完整推导。这一节只回答四件事：抓什么、怎么造缺陷、规则有几条、凭什么说它会红。
 
@@ -333,6 +334,52 @@ RPS 反而是 MySQL 的 1.57×（1.57 = 419.9 / 267.3）。
 > `configure_item_range(items)`，并在文档里把这条写出来。
 
 
+### 8. 分布式压测：能跑，但只抬一层天花板
+
+单机压测的上限是**压测机自己**（GIL、网卡、端口耗尽）。`bench/distributed.py` 把并发摊到
+多个 worker 进程/机器上，但它要解决的不是"更快"，而是**别把压测机的瓶颈当成服务的瓶颈**。
+
+跑一轮（默认同时跑一次单机基线，因为"分布式比单机快 x%"离开基线就没有意义）：
+
+```powershell
+python scripts/distributed_run.py --workers 3 --users 15 --duration 8 --items 5000
+```
+
+本机实测（Windows，5000 条，agg）：
+
+| 口径 | n | RPS | P50 | **P95** | P99 | 错误率 |
+|---|---:|---:|---:|---:|---:|---:|
+| 单进程 15u | 2808 | 397.81 | 33.89 | **78.58** | 104.48 | 0.00% |
+| 3 worker 各 5u（池化） | 2701 | 382.90 | 33.95 | **85.45** | 126.61 | 0.00% |
+| └ naive 合并（错误口径） | — | — | — | 84.62 | — | — |
+
+**RPS 0.96×，不是 3×** —— 三个 worker 抢同一块 CPU。这个数字本身就是结论：
+分布式解决的是"一台机器压不出更高并发"，不是"并发越高越快"。
+
+分布式压测最容易写错的一步是**合并分位**，代码里把错的那条留下当对照（`naive_tail_p95`）：
+
+```
+1000 个样本全 10ms 的 worker + 100 个样本全 900ms 的 worker
+各自 p95 = 10ms / 900ms
+按样本数加权平均 → 91ms     ← 错，把尾部抹平了
+池化 1100 个样本重算 → 900ms  ← 真相
+```
+
+分位数是**顺序统计量**，不能取 max（保守但答非所问），也不能加权平均。
+所以协议回传的是**原始耗时数组**，合并后走同一个 `summarize`（nearest-rank），
+与单机口径逐位一致。代价：20 000 个样本约 300KB JSON；跨广域网就该换直方图并接受分桶误差。
+
+另外两件事只有跑起来才测得到，都写进了用例：
+
+- **同一 epoch 开跑**：coordinator 发的是绝对时间（`start_at = now + lead`），不是"收到就开跑"。
+  两个 worker 差 300ms，在 5 秒梯度里就是 6% 的窗口错位。`hello` 顺手算时钟偏移，
+  本机实测 6.8~8.6ms（含一半 RTT 误差），真跨机器时看这个值比看结论有用。
+- **一个窗口，不是相加**：三个 worker 各跑 8 秒是"并发跑了 8 秒"，
+  RPS 的分母是 8 秒而不是 24 秒。实测窗口 8.05s。
+
+**边界**：没有服务发现、没有心跳、没有故障重投 —— 一个 worker 挂了整轮直接失败，
+**不把它的份额分给别人**（"悄悄少跑一半并发"比报错危险得多）。
+
 ---
 
 ## 二、快速开始
@@ -341,7 +388,7 @@ RPS 反而是 MySQL 的 1.57×（1.57 = 419.9 / 267.3）。
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（331 passed，约 131 秒；缓存/MySQL 用例需要真容器，没有则自动 skip）
+# 2. 跑平台自身的测试（343 passed，约 135 秒；缓存/MySQL/分布式用例需要真容器或本地进程，没有则自动 skip）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -686,7 +733,7 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-331 passed in ~131s
+343 passed in ~135s
 ```
 
 | 测试文件 | 用例数 | 覆盖 |
@@ -707,8 +754,9 @@ $ pytest tests/ -q
 | `test_cli_commands.py` | 28 | 走 `main()` 真调每个子命令（当场抓到 `trend` 在干净库上抛 `no such table`） |
 | `test_engine_runner.py` | 13 | `Runner` 真跑：起 stdlib `ThreadingHTTPServer`、真开线程池、真丢热身样本、真把 500 记成失败样本 |
 | `test_dashboard_api.py` | 25 | 看板对外端点的契约（本仓没装 httpx，直接调端点函数） |
+| `test_distributed.py` | 12 | 分布式：分片不给人 0 个用户 / **加权平均 p95 会把 900ms 报成 91ms**（对照组）/ 一个窗口而不是相加 / `ok_flags` 与命令级 `ok` 不能混 / 两个 worker 同 epoch 起跑且样本不丢 / worker 挂了整轮失败 |
 | `test_proxy_probe.py` | 10 | 反向代理探针：配置渲染（1.1/空 `Connection` 不能写反）、没有 nginx 时退出码必须是 0、三个口径都真的被量一次 |
-| **合计** | **331** | |
+| **合计** | **343** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -982,7 +1030,7 @@ python scripts/check_coverage.py --report .coverage.json
 | `metrics/gate.py` | 62.7% | 68.1% |
 | `metrics/analysis.py` | 70.1% | 70.1% |
 | 全仓（门槛口径） | 58.79% | **67%** |
-| 用例数 | 188 | **331** |
+| 用例数 | 188 | **343** |
 
 提高覆盖率不是目标本身。把 `sut/*` 从 0% 拉起来需要子进程追踪方案
 （`coverage run --parallel-mode` 之类），而那会改变压测进程的启动路径 ——
