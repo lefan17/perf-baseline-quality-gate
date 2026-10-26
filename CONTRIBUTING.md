@@ -285,3 +285,110 @@ workflow 只负责调用和读退出码，阈值散落在 CI 配置里是门禁�
 提交涉及这些能力的 PR 时，**必须在 PR 模板第五节写明「本机未验证」**。
 声称验证过一件没验证的事，比明说没验证危险得多 ——
 这个仓库存在的全部意义就是"不给出没有证据的绿灯"。
+
+---
+
+## 十一、Windows 上跑测试：临时目录会落在仓库里
+
+**这条只影响 Windows 本机开发，不是仓库缺陷，也不影响 CI。**
+
+### 现象
+
+跑完 `pytest`，仓库根目录多出 `pytest-of-<用户名>/`：
+
+```
+$ git status --short
+?? pytest-of-lefan/
+```
+
+`git status` 把它报成未跟踪文件。**它通常直接删得掉**：
+
+```powershell
+Remove-Item -Recurse -Force pytest-of-$env:USERNAME     # 本机实测有效
+```
+
+### 根因（实测，不是推测）
+
+这台开发机的 `%TEMP%` 指向 `D:\study\AppCache\Temp`，但 Python 进程**写不进去**
+（该目录对本用户的 ACE 里有 `WO`，即只写，缺 `F` 完全控制）。而 `tempfile`
+探测到默认候选不可写后，**静默回退到当前工作目录**：
+
+```text
+TEMP                  = D:\study\AppCache\Temp
+tempfile.gettempdir() = D:\DSH\test-projects\perf-baseline-quality-gate   ← 是 cwd！
+```
+
+于是 pytest 的 `--basetemp` 就落在仓库根目录里。**测试本身是正常的** ——
+`pytest tests/ -q` 会照常 `370 passed / 19 skipped`，只是临时目录位置不理想。
+
+### 一个曾经真的删不掉的情况
+
+`pytest-of-<用户名>/` 本身删得掉，但**如果里面有子目录是在沙箱收紧时创建的**，
+就可能删不掉。工作区根目录带着 DSH 文件沙箱挂的这条 ACE：
+
+```text
+Everyone:(CI)(DENY)(DC)     ← DC = Delete Child，不许删子项
+```
+
+它是 `(I)`（继承）来的 —— **在子目录上改自己的权限没用**，要改上层或改沙箱策略。
+这也是 `icacls <目录> /grant` 一通操作之后它还在的原因。
+
+**实际见过的唯一一例**是 `exdir/`：当时沙箱策略是 `workspace-write`，里面几个
+子目录删不掉，`Remove-Item` 与 `icacls /grant` 全报 Access denied。后来策略改成
+`danger-full-access`，**同一条 `Remove-Item -Recurse -Force` 一次就删掉了** ——
+说明当时挡住它的确实是那条沙箱 ACE，不是文件锁定。
+
+### 怎么办
+
+本地跑测试时可以显式指定一个工作区内的临时根目录，跑完自己清掉：
+
+```powershell
+$tmp = Join-Path (Get-Location) "._pytest_tmp"
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+$env:PYTEST_DEBUG_TEMPROOT = $tmp
+
+& ".\.venv\Scripts\python.exe" -m pytest tests/ -q
+
+Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+```
+
+两个注意点，都是实测过的：
+
+- **目录必须先建好**。`PYTEST_DEBUG_TEMPROOT` 不会替你创建父目录，指到不存在的
+  路径会直接 `FileNotFoundError: [WinError 3] 系统找不到指定的路径`。
+- **不要指到 `$env:TEMP` 或用户目录**。在这台机器上 Python 进程只能写会话工作区，
+  往 `C:\Users\<你>`、桌面、`D:\study\...` 下 `os.mkdir()` 全部
+  `PermissionError`。指过去反而会挂。
+
+如果你不想管这个，**裸跑也完全能过**（临时目录落在仓库里而已，跑完 `git status`
+会看到 `?? pytest-of-<用户名>/`，删掉即可）。
+
+### 仍然删不掉时
+
+按代价从小到大排查。**下面第 2 条我没有在本机复现出「句柄占用 → 删除失败」的
+因果链** —— 它是常见排查方向，不是实测结论。按本仓库第二节第 3 条纪律，
+没测过的就写成没测过：
+
+1. **确认沙箱策略**。如果是 `workspace-write`，就是上面那条 `(DENY)(DC)` 在挡；
+   这种情况改自身权限无效，要么换策略，要么留着不管（它未跟踪，不影响提交）。
+2. **查有没有 python 进程还开着**（压测起的 SUT 子进程、没关的日志文件）：
+
+```powershell
+Get-Process python* | Select-Object Id, ProcessName, StartTime
+# 确认是残留进程后再停，别把正在跑的压测一起杀了
+Get-Process python* | Stop-Process -Force
+Remove-Item -Recurse -Force pytest-of-$env:USERNAME
+```
+
+停进程后仍然不行，用 `handle64.exe <目录名>` 或资源监视器查真正的占用者。
+
+### 为什么不写进 `.gitignore`
+
+**故意的。** 写进去等于默认「跑测试会在仓库里拉屎」，把问题藏起来而不是修掉。
+看到它出现，说明临时目录落点需要显式指定 —— 那是一个应该被看见的信号。
+
+### CI 不受影响
+
+GitHub Actions 的 Ubuntu runner 上不存在这个问题，`tempfile` 正常工作。
+所以这里没有把它记进 `docs/已知问题.md` —— 它是开发机环境差异，不是代码缺陷。
+
