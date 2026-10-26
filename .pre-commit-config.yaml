@@ -52,7 +52,9 @@ repos:
       # 刻意**不**加 ruff-format：这个仓库的代码是手写对齐的中文注释风格，
       # 大面积 reformat 会产生一个谁都读不完的 diff，并且会动到
       # metrics/gate.py 等本次边界外的文件。格式化留作独立议题。
-      # CI 里对应的是 `ruff format --check`，且设为非阻塞。
+      # CI 里对应的是 `ruff format --check`，且它是**阻塞项**
+      # （quality-gate.yml:75-80）。也就是说：本机不自动格式化，
+      # 但 CI 会拦住没格式化的提交 —— 本地跑 `ruff format .` 再提交即可。
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v2.4.0

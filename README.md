@@ -886,7 +886,7 @@ P95 从 105.9ms 到 110.2ms（+4.1%），门禁判「拦住」——
 
 | 文件 | 内容 |
 |---|---|
-| `docs/已知问题.md` | **27 个缺陷**的完整记录（P-1~P-27，每条含机制、实测数字、门禁、探针）| 
+| `docs/已知问题.md` | **28 个缺陷**的完整记录（P-1~P-28，每条含机制、实测数字、门禁、探针）| 
 | [`docs/初学者完全入门.md`](docs/初学者完全入门.md) | **第一次读这个仓库从这里开始**：一条压测的完整一生、六个目录谁调用谁、每一处设计背后的坑，10 章 + 附录 A/B/C |
 | [`docs/六周学习路线.md`](docs/六周学习路线.md) | 按周安排的学习顺序：第 1 周打掉「数字可信」的默认直觉、第 2–3 周读引擎与口径、第 4 周拆门禁、第 5 周走基线离开本机的闭环、第 6 周自己造一个缺陷让门禁抓住它。每周都写了验收标准与「只有一半时间时砍哪块」，末尾附七个面试高频问题 |
 | `docs/度量口径.md` | 分位数算法、容忍带、拐点判据、flaky 判据的全部口径 |
@@ -1171,8 +1171,14 @@ end-of-file-fixer、check-yaml/toml/json、mixed-line-ending、detect-private-ke
 
 | 路线 | 命令 | 何时用 |
 |---|---|---|
-| Python（默认） | `python scripts/check_commit_msg.py <msgfile>` | pre-commit 与 CI |
+| Python（默认） | `python scripts/check_commit_msg.py <msgfile>` | pre-commit 的 `commit-msg` 钩子 |
 | Node | `npx --yes @commitlint/cli@19 --edit <msgfile>` | 团队本来就有 Node 时 |
+
+**注意这条检查目前只在 pre-commit，不在 CI**：`.pre-commit-config.yaml`
+里挂了 `commit-msg` stage，但 `quality-gate.yml` 全文没有任何步骤调用它。
+所以它拦得住"本机装了 pre-commit 的人"，拦不住"直接 `git commit --no-verify`
+或从网页提交"。这不影响它在本地的作用，但别以为它会兜住所有人 ——
+真要兜住得在 CI 里加一步（那是另一件事，见 `docs/已知问题.md` 的口径）。
 
 本机 Node 是可用的（`node --version` → `v24.16.0`，`npx --version` → `11.13.0`），
 所以 `commitlint.config.mjs` 也一并给了。**默认仍走 Python**：

@@ -103,8 +103,15 @@ function Assert-Venv {
 }
 
 # 每个任务都返回"将要执行的命令 + 参数"，-Task help 把它打印出来，
-# 其余任务用 & 真正调用。这样 help 的输出**不可能与实际执行的命令漂移** ——
-# 它是同一份数据渲染出来的，不是两处分别手写的文案。
+# 其余任务用 & 真正调用。
+#
+# 诚实边界：`Get-Commands`（本函数）与 `Invoke-Task` 其实是**两份定义** ——
+# 一处是给人看的字符串，一处是真正的调用。原先这里写「help 的输出不可能
+# 与实际执行的命令漂移」，那是假的：两处必须人工保持一致。
+# `run.sh:43-50` 已如实承认同一件事，这里与它对齐。
+# 为什么不做成"一份定义两处用"：PowerShell 里要把「命令 + 参数」当数据存，
+# 既要不经 Invoke-Expression（引号地狱）、又要能原样显示，代价远大于
+# 这两份几十行的清单。真要做，就得改成"数据 + 解释器"，那是另一个设计。
 function Get-Commands([string]$Name) {
     $py = '& ".\.venv\Scripts\python.exe"'
     switch ($Name) {
@@ -151,7 +158,12 @@ function Get-Commands([string]$Name) {
 }
 
 function Invoke-Task([string]$Name) {
-    Assert-Venv
+    # setup 是唯一的例外：它的职责就是从零建出 venv，所以不能要求 venv 已经存在。
+    # 原先这里无条件 Assert-Venv，结果在全新克隆上 `-Task setup`（以及 `-Task all`
+    # 的第一步）直接 exit 2，还打印「先跑 -Task setup」—— 而人正在跑的就是它。
+    # 自相矛盾的提示等于把 bootstrap 路径彻底堵死（实测 SETUP_EXIT=2）。
+    # `run.sh:91-98` 把 setup 放在 assert_venv 之前，没有这个问题；这里与它对齐。
+    if ($Name -ne 'setup') { Assert-Venv }
     switch ($Name) {
         'setup' {
             $venvDir = Join-Path $RepoRoot '.venv'

@@ -7,8 +7,12 @@
 1. 这个仓库是纯 Python 项目（无 `package.json`、无前端构建链），
    为了一个提交信息检查引入整条 Node 工具链，是把「可复现」的成本
    从 Python 一项变成 Python + Node 两项。
-2. 本项目的 CI 是三个 Python job，没有一个装 Node。
+2. 本项目的 CI 是六个 Python job，没有一个装 Node
+   （`lint` / `security-audit` / `platform-tests` / `perf-gate` /
+   `n1-probe` / `pages`，见 `.github/workflows/quality-gate.yml`）。
    在 CI 里为一个普通钩子单独装 Node，会让「跑一次门禁」的依赖面变大。
+   顺带说明：**这条检查目前没有被任何 workflow 调用**，只挂在 pre-commit
+   的 `commit-msg` stage 上；它拦不住 `--no-verify` 和网页提交。
 3. 这条规则本身很短（正则 + 类型白名单）。能在 60 行里说清的东西，
    不值得多一个运行时。
 
