@@ -169,7 +169,7 @@ class TestParserWiring:
         neither = parser.parse_args(["trend", "--label", "x"])
         assert neither.rules == str(platform_cli.DEFAULT_RULES), "没写 --rules 时必须回落到仓库那份"
 
-    @pytest.mark.parametrize("name", ["run", "trend", "gate", "suite", "probe"])
+    @pytest.mark.parametrize("name", ["run", "probe", "suite", "flaky", "gate", "trend", "report"])
     def test_rules_flag_is_visible_in_subcommand_help(self, name, capsys):
         """`--rules` 要出现在子命令的 `--help` 里，否则没人知道它能写在这。
 
@@ -182,6 +182,29 @@ class TestParserWiring:
             parser.parse_args([name, "--help"])
         out = capsys.readouterr().out
         assert "--rules" in out, f"`{name} --help` 里看不到 --rules，用户不会知道它能写在这里"
+
+    @pytest.mark.parametrize("name", ["baseline", "noise", "prune", "serve", "env"])
+    def test_rules_flag_is_absent_where_it_would_be_dead(self, name, capsys):
+        """不读规则文件的命令，**不许**挂着 `--rules`（P-29）。
+
+        P-25 的第一版修法是"给 `sub.choices.values()` 全挂一份"，于是这五个
+        命令也长出了 `--rules`。但它们对应的 `cmd_*` 从不读 `args.rules`
+        （全文件只出现在 run/probe/suite/flaky/gate/trend/report 七处），
+        于是参数能解析、不报错、**不生效**，`--help` 里还列着。
+
+        这个失败模式比原来的"参数不认识"更坏：写错位置至少会得到一条
+        报错，而死参数会让人以为"我已经换了阈值"，算出来的结论却用的是
+        仓库那份。一个只对部分命令有意义的开关，宁可让它在别处报错。
+
+        本用例与 `test_rules_flag_is_visible_in_subcommand_help` 是一对：
+        那边钉"该有的地方有"，这边钉"不该有的地方没有"。缺任何一半，
+        全挂或全不挂都能过。
+        """
+        parser = platform_cli.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([name, "--help"])
+        out = capsys.readouterr().out
+        assert "--rules" not in out, f"`{name} --help` 里出现了 --rules，但 `cmd_{name}` 从不读它 —— 这是个死参数"
 
 
 class TestHelpers:

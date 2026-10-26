@@ -388,7 +388,7 @@ python scripts/distributed_run.py --workers 3 --users 15 --duration 8 --items 50
 # 1. 建虚拟环境 + 装依赖（运行时 + 开发工具链）
 pwsh -File scripts\run.ps1 -Task setup
 
-# 2. 跑平台自身的测试（370 passed / 19 skipped，约 130 秒；缓存/MySQL/分布式用例需要真容器或本地进程，没有则自动 skip）
+# 2. 跑平台自身的测试（379 passed / 19 skipped，约 130 秒；缓存/MySQL/分布式用例需要真容器或本地进程，没有则自动 skip）
 pwsh -File scripts\run.ps1 -Task test
 
 # 3. 跑一轮真压测 + 门禁（20k 数据、10u/20u 两级并发，约 1 分钟）
@@ -733,7 +733,7 @@ CV_diff = √2 × CV ≈ 4.40%；10% / 4.40% ≈ 2.27σ
 
 ```
 $ pytest tests/ -q
-370 passed, 19 skipped in 124s
+379 passed, 19 skipped in 124s
 ```
 
 > 19 条 skip 全部是**环境缺失**，不是没写完：12 条要可达的 MySQL
@@ -749,13 +749,13 @@ $ pytest tests/ -q
 | `test_cache_layer.py` | 11 | Redis 缓存层：命中 / 负缓存挡穿透 / 写后失效 / `-ERR` 不等于不可用 / 无 Redis 时降级为 `backend=none` |
 | `test_index_probe.py` | 4 | 索引失效：断言执行计划是 `SEARCH` 还是 `SCAN`，并比较 SQL 层耗时 |
 | `test_connection_pool.py` | 12 | 连接池：复用 / 耗尽抛而不是阻塞 / 池满映射成 **503 + Retry-After**（不是 500）/ 默认关闭 / 归还后恢复 / **工厂抛异常不许泄漏许可** |
-| `test_cli.py` | 27 | CLI 解析器接线（每个子命令都绑定真实函数；`baseline` 的 5 个 action 也是契约） |
+| `test_cli.py` | 34 | CLI 解析器接线（每个子命令都绑定真实函数；`baseline` 的 5 个 action 也是契约） |
 | `test_dashboard.py` | 21 | 看板渲染接线（折线真的被画出来，不是定义了没用）+ 汇总口径单一来源 + 静态快照导出（不泄露本机路径） |
 | `test_r3_end_to_end.py` | 2 | R3 端到端：真的压一轮、真的比基线、真的会变红（`sut` + `perf` 标记） |
 | `test_rules_single_source.py` | 10 | 阈值只有一个住址（`gate_rules.yaml`），改 YAML 真的会改判定 |
 | `test_baseline_snapshot.py` | 26 | 基线快照 `baseline export/import`：缺文件 / 损坏 / 版本不认识 / label 不符 / 配置不可比 / 记的是量出基线的机器 / 只报数模式 |
 | `test_check_coverage_script.py` | 25 | 门禁脚本自身的契约：配置缺失要退 1、排除路径写错要报错、失败按百分比升序、JSON 里改低 1pp 必须被抓到 |
-| `test_cli_commands.py` | 33 | 走 `main()` 真调每个子命令（当场抓到 `trend` 在干净库上抛 `no such table`；`gate` 对 probe 轮必须按自己的 kind 取到基线） |
+| `test_cli_commands.py` | 35 | 走 `main()` 真调每个子命令（当场抓到 `trend` 在干净库上抛 `no such table`；`gate` 对 probe 轮必须按自己的 kind 取到基线） |
 | `test_engine_runner.py` | 15 | `Runner` 真跑：起 stdlib `ThreadingHTTPServer`、真开线程池、真丢热身样本、真把 500 记成失败样本、种子真的按 worker 拆开 |
 | `test_dashboard_api.py` | 26 | 看板对外端点的契约（本仓没装 httpx，直接调端点函数） |
 | `test_distributed.py` | 12 | 分布式：分片不给人 0 个用户 / **加权平均 p95 会把 900ms 报成 91ms**（对照组）/ 一个窗口而不是相加 / `ok_flags` 与命令级 `ok` 不能混 / 两个 worker 同 epoch 起跑且样本不丢 / worker 挂了整轮失败 |
@@ -764,7 +764,7 @@ $ pytest tests/ -q
 | `test_env_config.py` | 8 | 环境变量容错：非法值不许在**导入期**炸掉服务，回退默认值并告警；`seed(items=0)` 就是 0 条 |
 | `test_demo_script.py` | 5 | `scripts/demo.py` 那条「一条命令把门禁跑红」的演示，退出码与关键输出都必须真的出现 |
 | `test_pytest_plugin.py` | 10 | 结果入库插件：`markers` 真的从 item 取到（原实现在 `TestReport` 上找 `.item`，恒为空串）；照文档独立跑要能成功（原来收尾阶段撞外键）；没设 `QUALITY_RUN_ID` 时连库文件都不该被创建 |
-| **合计** | **389** | |
+| **合计** | **398** | |
 
 ### 七个真实踩坑，都留了测试防回归
 
@@ -886,7 +886,7 @@ P95 从 105.9ms 到 110.2ms（+4.1%），门禁判「拦住」——
 
 | 文件 | 内容 |
 |---|---|
-| `docs/已知问题.md` | **28 个缺陷**的完整记录（P-1~P-28，每条含机制、实测数字、门禁、探针）| 
+| `docs/已知问题.md` | **31 个缺陷**的完整记录（P-1~P-31，每条含机制、实测数字、门禁、探针）| 
 | [`docs/初学者完全入门.md`](docs/初学者完全入门.md) | **第一次读这个仓库从这里开始**：一条压测的完整一生、六个目录谁调用谁、每一处设计背后的坑，10 章 + 附录 A/B/C |
 | [`docs/六周学习路线.md`](docs/六周学习路线.md) | 按周安排的学习顺序：第 1 周打掉「数字可信」的默认直觉、第 2–3 周读引擎与口径、第 4 周拆门禁、第 5 周走基线离开本机的闭环、第 6 周自己造一个缺陷让门禁抓住它。每周都写了验收标准与「只有一半时间时砍哪块」，末尾附七个面试高频问题 |
 | `docs/度量口径.md` | 分位数算法、容忍带、拐点判据、flaky 判据的全部口径 |
@@ -1038,7 +1038,7 @@ python scripts/check_coverage.py --report .coverage.json
 
 | 文件 | 条数 | 补掉了什么 |
 |---|---:|---|
-| `tests/test_cli_commands.py` | 33 | 走 `main()` 真调每个子命令。当场抓到一个真 bug：`trend` 在干净库上抛 `no such table: runs` —— 而它是最可能被人在空仓库上第一个跑的命令 |
+| `tests/test_cli_commands.py` | 35 | 走 `main()` 真调每个子命令。当场抓到一个真 bug：`trend` 在干净库上抛 `no such table: runs` —— 而它是最可能被人在空仓库上第一个跑的命令 |
 | `tests/test_engine_runner.py` | 15 | `Runner` 从没被真跑过（只测了分位数等纯函数）。起一个 stdlib `ThreadingHTTPServer`，真开线程池、真丢热身样本、真把 500 记成失败样本 |
 | `tests/test_dashboard_api.py` | 26 | `/api/gate` 等端点是**门禁对外的唯一门面**，此前一条都没测。包括"无梯度数据必须判 blocked"这条历史事故的回归 |
 
@@ -1050,7 +1050,7 @@ python scripts/check_coverage.py --report .coverage.json
 | `metrics/gate.py` | 62.7% | 68.9% |
 | `metrics/analysis.py` | 70.1% | 71.0% |
 | 全仓（门槛口径） | 58.79% | **66.63%** |
-| 用例数 | 188 | **389** |
+| 用例数 | 188 | **398** |
 
 > 上面「加门禁前」那一列是历史快照，保留它是为了说明**这道门禁确实抓到过东西**；
 > 「现在」那一列会随代码变化，读它的时候顺手跑一次 `check_coverage.py` 核对，
@@ -1093,7 +1093,7 @@ select = ["E4","E7","E9","F","B","C4","N","FURB","PIE",
 `ruff format .`，**17 个文件被重排、21 个已合规**，重排后 `ruff format --check .`
 是 **38 files already formatted**，`pytest tests/ -q` 当时是 180 passed（那是历史口径；
 同一天后来又补了看板静态导出的 8 条测试到 188，再之后补 per-file 门禁那三组测试到 279，
-现在这棵树是 **370 passed / 19 skipped**）、
+现在这棵树是 **379 passed / 19 skipped**）、
 `mypy` 当时是 16 source files 零问题（现在 **29 source files**）。既然存量已经清零，
 就没有理由再让它非阻塞：
 现在这一步与 `ruff check .`、`mypy` 一样是**阻塞项**，与

@@ -32,7 +32,7 @@
 
 ## 二、如果是改代码
 
-- [ ] `pytest tests/ -q` → **370 passed / 19 skipped**（用例数与基线一致，一条不少；
+- [ ] `pytest tests/ -q` → **379 passed / 19 skipped**（用例数与基线一致，一条不少；
       skip 全是"本机没有 Redis/MySQL"，不是没写完）
 - [ ] `python -m ruff check .` 通过
 - [ ] `python -m mypy` 通过

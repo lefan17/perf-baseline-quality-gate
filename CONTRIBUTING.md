@@ -14,7 +14,7 @@ python -m venv .venv
 
 # 2. 一键脚本（把下面几条命令都包好了）
 pwsh -File scripts\run.ps1 -Task help
-pwsh -File scripts\run.ps1 -Task test      # 跑 389 条用例（本机 19 条因缺 Redis/MySQL skip）
+pwsh -File scripts\run.ps1 -Task test      # 跑 398 条用例（本机 19 条因缺 Redis/MySQL skip）
 pwsh -File scripts\run.ps1 -Task lint      # ruff + mypy + 依赖一致性
 pwsh -File scripts\run.ps1 -Task perf      # 一轮真压测 + 门禁（约 1 分钟）
 
@@ -80,14 +80,14 @@ README 里每一个数字都是实测的。改文档时：
 - 已存在的数字**不许改**，除非你自己重跑并给出新输出；
 - 尤其是这些**有论证的**数字，改动要先读懂它们的论证：
   - `gate_rules.yaml` 的 `slow_report_p95_ms_max: 150.0` / `n1_over_agg_max: 10.0`
-  - README 里的 2.27σ 容忍带论证、7.81× 比值、370 passed / 19 skipped、12 条门禁规则
+  - README 里的 2.27σ 容忍带论证、7.81× 比值、379 passed / 19 skipped、12 条门禁规则
 
 ---
 
 ## 三、测试纪律
 
 ```powershell
-& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 370 passed / 19 skipped，约 130 秒
+& ".\.venv\Scripts\python.exe" -m pytest tests/ -q          # 379 passed / 19 skipped，约 130 秒
 ```
 
 - **不许删测试或改断言**来让门槛达标。门槛是为了暴露问题，不是为了通过。
@@ -319,7 +319,7 @@ tempfile.gettempdir() = D:\DSH\test-projects\perf-baseline-quality-gate   ← �
 ```
 
 于是 pytest 的 `--basetemp` 就落在仓库根目录里。**测试本身是正常的** ——
-`pytest tests/ -q` 会照常 `370 passed / 19 skipped`，只是临时目录位置不理想。
+`pytest tests/ -q` 会照常 `379 passed / 19 skipped`，只是临时目录位置不理想。
 
 ### 一个曾经真的删不掉的情况
 

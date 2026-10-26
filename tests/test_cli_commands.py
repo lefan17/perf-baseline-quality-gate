@@ -493,6 +493,27 @@ class TestPruneCommand:
         assert store.get_baseline("perf", LABEL) is not None
         assert "基线" in out
 
+    def test_running_row_is_reported_as_running_not_as_baseline(self, capsys):
+        """两种保护原因必须分开报（P-30）。
+
+        原先 `protected` 把「被基线引用」和「status='running'」合成一个集合，
+        输出只有一句「因被基线引用而强制保留」。于是对一个正在跑的僵尸行，
+        prune 会打印一条**无中生有**的解释 —— 而它的真实原因是
+        「另一个进程可能正在往里写」。这两种情况的处置完全不同：
+        前者是永久保护，后者等一会儿再跑就有了。
+        """
+        _seed_run(run_id="zombie", started_at="2026-01-01T00:00:00+00:00")
+        with store.tx() as conn:
+            conn.execute("UPDATE runs SET status='running' WHERE run_id='zombie'")
+        assert platform_cli.main(["prune", "--keep-runs", "0", "--no-vacuum"]) == 0
+        out = capsys.readouterr().out
+        assert "running" in out, "输出必须说清是因为 running 才保留"
+        assert "基线" not in out, f"这一轮根本没被基线引用，不该提基线：{out}"
+        # 而且它确实没被删掉 —— 说明保护本身是对的，错的只是解释。
+        with store.tx() as conn:
+            left = {r["run_id"] for r in conn.execute("SELECT run_id FROM runs").fetchall()}
+        assert "zombie" in left
+
     def test_keep_days_filters_by_age(self, capsys):
         _seed_run(run_id="ancient", started_at="2020-01-01T00:00:00+00:00")
         _seed_run(run_id="fresh", started_at="2030-01-01T00:00:00+00:00")
@@ -579,3 +600,47 @@ class TestServeCommand:
         assert platform_cli.main(["serve", "--host", "127.0.0.1", "--port", "18876"]) == 0
         assert called["host"] == "127.0.0.1"
         assert called["port"] == 18876
+
+
+class TestNoiseCommand:
+    """`noise` 量的是本机波动 —— 但它崩溃时不许在库里留下僵尸行（P-31）。"""
+
+    def test_failure_marks_the_run_as_error_instead_of_leaving_it_running(self, monkeypatch, capsys):
+        """崩溃的轮次必须落成 status='error'，不能停在 'running'。
+
+        原先只有 `finally: handle.stop()`，于是 `--step-users 0` 让
+        ThreadPoolExecutor 抛 ValueError 之后，runs 表留了一行
+        status='running'。而 `prune` 把 running 当作「另一个进程可能正在
+        往里写」而**永久保护** —— 一次失败就 forever 占着一个保留位。
+
+        这里把 start_sut / Runner 都打桩掉（`noise` 要起真服务、真压测，
+        一条用例 10 秒起），只验证"异常路径下 run 的终态"。
+        """
+        import platform_cli as pc
+
+        class _FakeHandle:
+            base_url = "http://127.0.0.1:1"
+
+            def stop(self):
+                pass
+
+        monkeypatch.setattr(pc, "start_sut", lambda **kw: _FakeHandle())
+        monkeypatch.setattr(pc, "configure_item_range", lambda *a, **k: [])
+        monkeypatch.setattr(pc, "build_engine_mix", lambda *a, **k: [])
+
+        class _BadRunner:
+            def __init__(self, **kwargs):
+                pass
+
+            def run(self):
+                raise ValueError("max_workers must be greater than 0")
+
+        monkeypatch.setattr(pc, "Runner", _BadRunner)
+
+        with pytest.raises(ValueError):
+            platform_cli.main(["noise", "--label", "boom", "--rounds", "1", "--step-users", "1"])
+
+        with store.tx() as conn:
+            rows = list(conn.execute("SELECT run_id, status FROM runs").fetchall())
+        assert len(rows) == 1, f"应该只留下一轮记录：{rows}"
+        assert rows[0]["status"] == "error", f"崩溃的轮次必须落成 error，否则 prune 会永久保护它：{rows[0]['status']}"

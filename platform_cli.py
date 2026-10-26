@@ -990,6 +990,19 @@ def cmd_noise(args: argparse.Namespace) -> int:
             print(
                 f"[noise] 第 {i} 轮 p95={merged['p95_ms']:.1f}ms rps={merged['rps']:.1f} err={merged['error_rate']:.2%}"
             )
+        except BaseException:
+            # 崩溃时必须把这一轮标成 error，不能让它留在 status='running'。
+            #
+            # 原先只有 finally: handle.stop()，于是任何异常（实测 `--step-users 0`
+            # 会让 ThreadPoolExecutor 抛 ValueError）都会在 runs 表留下一行
+            # status='running' 的僵尸。而 `prune` 把 running 当作"另一个进程正在
+            # 往里写，删掉会让它写进一个不存在的 run"，于是**永久保护**它 ——
+            # 一次失败就 forever 占着一个保留位，而且 `prune` 还会把原因错报成
+            # 「因被基线引用而强制保留」。
+            #
+            # 用 BaseException 而不是 Exception：Ctrl+C 中断同样会留下僵尸行。
+            store.finish_run(run_id, "error", {})
+            raise
         finally:
             handle.stop()
 
@@ -1068,9 +1081,10 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
     with store.tx() as conn:
         # 被基线引用的 run：永久保留（见 docstring 第 1 点）。
-        protected = {row["run_id"] for row in conn.execute("SELECT run_id FROM baselines")}
+        by_baseline = {row["run_id"] for row in conn.execute("SELECT run_id FROM baselines")}
         # 正在跑的 run 也要保留（第 3 点）。
-        protected |= {row["run_id"] for row in conn.execute("SELECT run_id FROM runs WHERE status='running'")}
+        by_running = {row["run_id"] for row in conn.execute("SELECT run_id FROM runs WHERE status='running'")}
+        protected = by_baseline | by_running
 
         groups = conn.execute("SELECT DISTINCT kind, label FROM runs ORDER BY kind, label").fetchall()
 
@@ -1103,9 +1117,15 @@ def cmd_prune(args: argparse.Namespace) -> int:
                         keep.add(row["run_id"])
 
             dropped = [r["run_id"] for r in rows if r["run_id"] not in keep]
-            kept_protected = [rid for rid in dropped if rid in protected]
+            # 两个原因必须分开统计：合并成一个计数会让输出把"正在跑"说成
+            # "被基线引用"，而这两件事的处置完全不同（前者等它跑完就好，
+            # 后者是永久保护）。原先只有一个 kept_by_baseline 字段，
+            # 于是 `prune --keep-runs 0` 对一个 status='running' 的僵尸行
+            # 会打印「因被基线引用而强制保留」—— 一句无中生有的解释。
+            kept_by_baseline = [rid for rid in dropped if rid in by_baseline]
+            kept_by_running = [rid for rid in dropped if rid in by_running and rid not in by_baseline]
             dropped = [rid for rid in dropped if rid not in protected]
-            if dropped or kept_protected:
+            if dropped or kept_by_baseline or kept_by_running:
                 plan.append(
                     {
                         "kind": kind,
@@ -1113,7 +1133,8 @@ def cmd_prune(args: argparse.Namespace) -> int:
                         "total": len(rows),
                         "keep": len(rows) - len(dropped),
                         "delete": len(dropped),
-                        "kept_by_baseline": len(kept_protected),
+                        "kept_by_baseline": len(kept_by_baseline),
+                        "kept_by_running": len(kept_by_running),
                     }
                 )
             doomed.extend(dropped)
@@ -1176,10 +1197,16 @@ def cmd_prune(args: argparse.Namespace) -> int:
     if not plan:
         print(f"[prune] 没有需要清理的运行")
     for g in plan:
+        # 两种保护原因分开说。合并成一句会把"正在跑"错报成"被基线引用"，
+        # 而它们的处置完全不同：前者等一会儿再跑就有了，后者是永久保护。
+        reasons = []
+        if g["kept_by_baseline"]:
+            reasons.append(f"{g['kept_by_baseline']} 轮因被基线引用而强制保留")
+        if g["kept_by_running"]:
+            reasons.append(f"{g['kept_by_running']} 轮因状态是 running 而保留")
         print(
             f"[prune]   {g['kind']}/{g['label']}: 共 {g['total']} 轮，"
-            f"{verb} {g['delete']} 轮，保留 {g['keep']} 轮"
-            + (f"（其中 {g['kept_by_baseline']} 轮因被基线引用而强制保留）" if g["kept_by_baseline"] else "")
+            f"{verb} {g['delete']} 轮，保留 {g['keep']} 轮" + (f"（其中 {'、'.join(reasons)}）" if reasons else "")
         )
     d = payload["delete"]
     print(
@@ -1380,12 +1407,23 @@ def build_parser() -> argparse.ArgumentParser:
     # （各子命令的 `--help` 看不到它），所以这条路径基本只会以"参数不认识"的
     # 形式被撞到 —— 报错指向的是"你打错了"，不是"这个参数位置不对"。
     #
-    # 修法：给每个子 parser 也挂一份。**default 必须是 `argparse.SUPPRESS`**：
-    # 子 parser 的默认值会写进同一个 namespace 并覆盖父级结果，若这里再写一次
-    # `default=str(DEFAULT_RULES)`，那么顶层写 `--rules X` 会被子 parser 的默认
-    # 值静默盖回仓库那份 —— 一个"参数变成摆设"且完全不报错的失败模式。
-    for _child in sub.choices.values():
-        _child.add_argument(
+    # 修法：给**真正会读规则文件**的每个子 parser 也挂一份。
+    # **default 必须是 `argparse.SUPPRESS`**：子 parser 的默认值会写进同一个
+    # namespace 并覆盖父级结果，若这里再写一次 `default=str(DEFAULT_RULES)`，
+    # 那么顶层写 `--rules X` 会被子 parser 的默认值静默盖回仓库那份 ——
+    # 一个"参数变成摆设"且完全不报错的失败模式。
+    #
+    # ## 为什么只挂给这 7 个（P-29）
+    #
+    # 第一版给 `sub.choices.values()` 全挂，于是 `baseline` / `noise` / `prune` /
+    # `serve` / `env` 也长出了 `--rules` —— 而它们的 `cmd_*` 从不读 `args.rules`
+    # （全文件只出现在 run/probe/suite/flaky/gate/trend/report 七处）。
+    # 结果是 5 个**死参数**：写上去能解析、不报错、不生效，`--help` 里还堂而皇之
+    # 列着。这比原来那个"参数不认识"更坏 —— 它把"报错"换成了"你以为你换了阈值"。
+    # 一个只对部分命令有意义的开关，宁可让它在别处报"不认识"。
+    _rules_commands = ("run", "probe", "suite", "flaky", "gate", "trend", "report")
+    for _name in _rules_commands:
+        sub.choices[_name].add_argument(
             "--rules",
             default=argparse.SUPPRESS,
             help="门禁规则 YAML 路径（默认 gate_rules.yaml；写在子命令前后都可以）",
