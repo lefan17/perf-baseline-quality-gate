@@ -26,7 +26,7 @@ keywords = ["performance", "baseline", "regression", "quality-gate", "pytest"]
 # 这里逐字镜像它，只为让 `pip install .` 能工作；两处一旦漂移，
 # scripts/check_deps_sync.py 会在 pre-commit 与 CI 里直接报错。
 dependencies = [
-    "fastapi==0.143.2",
+    "fastapi==0.161.0",
     "uvicorn==0.54.0",
     "requests==2.34.2",
     "pytest==9.1.1",
