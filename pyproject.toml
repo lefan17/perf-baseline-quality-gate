@@ -88,6 +88,26 @@ packages = ["bench", "dashboard", "metrics", "sut"]
 line-length = 120
 target-version = "py312"
 extend-exclude = [".venv", "reports", "ci_logs", "docs/incident-encoding-20261010"]
+# 让显式传进来的文件也遵守排除规则（pre-commit 的 hook 是按文件名逐个传的，
+# 不带这个开关时显式路径会绕过 exclude）。CI 走目录扫描，不受影响。
+force-exclude = true
+
+[tool.ruff.format]
+# 只格式化 .py，不管 Markdown 里的代码块。
+#
+# 为什么需要这条：ruff 从 0.16.0（2026-07-23）起，`ruff format` 会顺带格式化
+# Markdown 中语言标记为 python/py/python3/pyi/pycon 的围栏代码块
+# （https://astral.sh/blog/ruff-v0.16.0 ）。本仓 CI 的 `ruff format --check .`
+# 是阻塞项（2026-10-13 起），于是「写文档」这个纯写作动作会把整条流水线弄红：
+# 2026-10-26 起本仓连续失败，全是 docs/*.md 里的 Python 示例被判定不合规。
+#
+# 实测 diff：`docs/初学者完全入门.md` 336 行、`docs/已知问题.md` 6 行、
+# `docs/articles/02-同一个N+1缺陷，五种测法差两个数量级.md` 6 行、
+# `docs/六周学习路线.md` 4 行 —— 合计 352 行纯排版改动，语义零变化。
+# 文档示例是给人读的，被按代码风格重排后反而更难读。
+#
+# 只关 format，不动 lint：`ruff check` 本来就只扫 .py，不受影响。
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
